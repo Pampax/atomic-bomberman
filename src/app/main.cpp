@@ -70,6 +70,9 @@ struct Options {
     int attractSeconds = -1;  // --attract-seconds N: idle time on the menu before the demo (default: value 92)
     bool debug = false;       // --debug: the original's debug keys (it used the KWD environment variable)
     bool noIntro = false;     // --no-intro: go straight to the main menu
+    int mapRepeat = 0;        // --map-size N: the field repeated N x N times (0: as last chosen)
+    int windowW = 0;          // --window WxH: the window's size, for trying other screen shapes on a desktop
+    int windowH = 0;
 #ifdef __ANDROID__
     bool gles = true;         // OpenGL ES 3.0 (always on a phone)
     bool touch = true;        // on-screen controls
@@ -132,6 +135,8 @@ Options parseArgs(int argc, char** argv) {
                       "  --native             640x480 window\n"
                       "  --gles               OpenGL ES 3.0 instead of OpenGL 3.3 (what phones use)\n"
                       "  --touch              on-screen controls (as on a phone), worked with the mouse\n"
+                      "  --map-size N         a local match on the field repeated N x N times (1-3)\n"
+                      "  --window WxH         the window's size (to try another screen's shape)\n"
                       "  --shapes             plain shapes instead of the game's graphics\n"
                       "Testing: --demo --frames N --screenshot FILE --result-shot --menu-shot N --script KEYS");
             std::exit(0);
@@ -174,6 +179,8 @@ Options parseArgs(int argc, char** argv) {
         else if (a == "--no-intro") o.noIntro = true;
         else if (a == "--gles") o.gles = true;
         else if (a == "--touch") o.touch = true;
+        else if (a == "--map-size") o.mapRepeat = std::clamp(std::atoi(next().c_str()), 1, ab::kMaxMapRepeat);
+        else if (a == "--window") std::sscanf(next().c_str(), "%dx%d", &o.windowW, &o.windowH);
         else if (a == "--free") o.freeAssets = true;
         else if (a == "--debug") o.debug = true;
         else if (a == "--attract-seconds") o.attractSeconds = std::atoi(next().c_str());
@@ -452,7 +459,8 @@ int runGame(int argc, char** argv, bool& again) {
     const bool unattended = opt.frames > 0 || opt.menuShot > 0 || !opt.script.empty() || opt.demo;
     ab::Settings early;
     const bool earlyLoaded = !unattended && early.load(userFile("options.ini"));
-    SDL_Window* window = SDL_CreateWindow("Atomic Bomberman (modern)", opt.native ? 640 : 960, opt.native ? 480 : 720,
+    SDL_Window* window = SDL_CreateWindow("Atomic Bomberman (modern)", opt.windowW > 0 ? opt.windowW : opt.native ? 640 : 960,
+                                          opt.windowH > 0 ? opt.windowH : opt.native ? 480 : 720,
 #ifdef __ANDROID__
                                           SDL_WINDOW_OPENGL | SDL_WINDOW_FULLSCREEN);
 #else
@@ -565,6 +573,7 @@ int runGame(int argc, char** argv, bool& again) {
     const bool useSettings = opt.frames <= 0 && !opt.demo && opt.script.empty() && !settingsPath.empty();
     if (useSettings && cfg.load(settingsPath)) std::fprintf(stderr, "INFO  Settings: %s\n", settingsPath.c_str());
     bool randomLevel = !opt.levelSet && cfg.level < 0;
+    int mapRepeat = opt.mapRepeat > 0 ? opt.mapRepeat : cfg.mapRepeat;
     if (!opt.levelSet) opt.level = std::max(0, cfg.level);
     if (!opt.winsSet) opt.wins = cfg.winsNeeded;
     if (!opt.schemeSet && useSettings) {
@@ -646,6 +655,7 @@ int runGame(int argc, char** argv, bool& again) {
         auto saveSettings = [&]() {
             cfg.level = randomLevel ? -1 : level;
             cfg.winsNeeded = winsNeeded;
+            cfg.mapRepeat = mapRepeat;
             cfg.teamPlay = teamPlay;
             if (!schemes.empty()) {
                 cfg.scheme = schemes[static_cast<std::size_t>(schemeIndex)].file;
@@ -785,6 +795,9 @@ int runGame(int argc, char** argv, bool& again) {
             rouletteFrames = 0;
             rouletteMs = 0.0;
         };
+        // Attract mode (original 0x42BB52): after value 92 (30) idle seconds on the main menu
+        // a demo round is played by computer players, then the menu and its settings return.
+        bool attract = false;
         // Campaign mode (hidden in the original: C five times on the player list).
         bool campaignMode = false;
         std::vector<ab::CampaignStage> stages;
@@ -868,6 +881,8 @@ int runGame(int argc, char** argv, bool& again) {
             setup.level = level;
             setup.scheme = scheme;
             setup.scheme.start = startCells;
+            // A big map is for the ordinary local match, not for a campaign's stages or the demo.
+            setup.scheme.repeatX = setup.scheme.repeatY = campaignMode || attract ? 1 : mapRepeat;
             setup.powers = schemePowers;
             setup.extras = extras;
             setup.conveyorSpeed = cfg.conveyorSpeed;
@@ -880,13 +895,16 @@ int runGame(int argc, char** argv, bool& again) {
             setup.winByKills = cfg.winByKills;
             setup.campaign = campaignMode;
             int n = 0;
+            std::array<bool, ab::kMaxPlayers> playedHere{};
             for (int i = 0; i < ab::kMaxPlayers; ++i) {
                 const Control c = control[static_cast<std::size_t>(i)];
                 setup.present[static_cast<std::size_t>(i)] = c != Control::Off;
                 // Computer players are marked: the level's control delay is for humans only.
                 setup.human[static_cast<std::size_t>(i)] = c != Control::Ai;
+                playedHere[static_cast<std::size_t>(i)] = c != Control::Off && c != Control::Ai;
                 n += c != Control::Off ? 1 : 0;
             }
+            renderer.setFollowed(playedHere);
             if (campaignMode) {
                 const ab::CampaignStage& st = stages[static_cast<std::size_t>(stageIndex)];
                 setup.ghosts = st.ghosts, setup.ghostSpeed = st.ghostSpeed;
@@ -902,7 +920,7 @@ int runGame(int argc, char** argv, bool& again) {
             previous.capture(world);
             roundOverSteps = 0;
             resultKey = false;
-            std::fprintf(stderr, "INFO  Round started players=%d level=%d\n", n, level);
+            std::fprintf(stderr, "INFO  Round started players=%d level=%d map=%dx%d\n", n, level, world.gridW(), world.gridH());
         };
         // After the roulette the match setup goes on: the player list, or straight into the match.
         auto leaveRoulette = [&]() {
@@ -930,9 +948,6 @@ int runGame(int argc, char** argv, bool& again) {
             helpListReturn = back;
             screen = Screen::HelpList;
         };
-        // Attract mode (original 0x42BB52): after value 92 (30) idle seconds on the main menu
-        // a demo round is played by computer players, then the menu and its settings return.
-        bool attract = false;
         Uint64 menuIdleSince = SDL_GetTicks();
         std::array<Control, ab::kMaxPlayers> savedControl{};
         int savedLevel = 0;
@@ -1172,16 +1187,20 @@ int runGame(int argc, char** argv, bool& again) {
             if (!opt.script.empty() && frame % 10 == 5 && static_cast<std::size_t>(frame / 10) < opt.script.size()) {
                 const std::string& k = opt.script[static_cast<std::size_t>(frame / 10)];
                 SDL_Event press{};
-                if (k.rfind("tap=", 0) == 0) {
-                    // A tap at X:Y, in thousandths of the window (the mouse standing in for a finger).
+                if (k.rfind("tap=", 0) == 0 || k.rfind("hold=", 0) == 0) {
+                    // A tap at X:Y, in thousandths of the window (the mouse standing in for a finger);
+                    // hold= leaves the finger there.
+                    const bool tap = k[0] == 't';
                     int tx = 0, ty = 0, ww = 1, wh = 1;
-                    std::sscanf(k.c_str() + 4, "%d:%d", &tx, &ty);
+                    std::sscanf(k.c_str() + (tap ? 4 : 5), "%d:%d", &tx, &ty);
                     SDL_GetWindowSize(window, &ww, &wh);
                     press.type = SDL_EVENT_MOUSE_BUTTON_DOWN;
                     press.button.x = static_cast<float>(tx * ww) / 1000.0f;
                     press.button.y = static_cast<float>(ty * wh) / 1000.0f;
-                    SDL_PushEvent(&press);
-                    press.type = SDL_EVENT_MOUSE_BUTTON_UP;
+                    if (tap) {
+                        SDL_PushEvent(&press);
+                        press.type = SDL_EVENT_MOUSE_BUTTON_UP;
+                    }
                 } else if (k.rfind("pad=", 0) == 0) {
                     // A gamepad button: a b x y start up down left right.
                     touch.hide();
@@ -1654,9 +1673,10 @@ int runGame(int argc, char** argv, bool& again) {
                 } else if (screen == Screen::LevelSetup) {
                     // Level, scheme and match length, as on the original's second pre-game screen.
                     const int d = key == SDLK_RIGHT ? 1 : key == SDLK_LEFT ? -1 : 0;
-                    if (key == SDLK_UP) setupRow = (setupRow + 3) % 4;
-                    if (key == SDLK_DOWN) setupRow = (setupRow + 1) % 4;
+                    if (key == SDLK_UP) setupRow = (setupRow + 4) % 5;
+                    if (key == SDLK_DOWN) setupRow = (setupRow + 1) % 5;
                     if (d != 0 && setupRow == 3) teamPlay = !teamPlay;
+                    if (d != 0 && setupRow == 4) mapRepeat = (mapRepeat - 1 + d + ab::kMaxMapRepeat) % ab::kMaxMapRepeat + 1;
                     if (d != 0 && setupRow == 0) {
                         // Random Each Game, then the eleven levels.
                         const int choice = ((randomLevel ? -1 : level) + d + 1 + 12) % 12 - 1;
@@ -2234,12 +2254,14 @@ int runGame(int argc, char** argv, bool& again) {
                                             400.0f + 20.0f + 40.0f * static_cast<float>(px), 100.0f + 35.0f + 36.0f * static_cast<float>(py));
                         }
                 }
-                const std::string lines[4] = {
+                const std::string lines[5] = {
                     randomLevel ? "Random Each Game" : ab::kLevelName[level],
                     schemes.empty() ? std::string("(built-in arena)") : "Scheme: " + schemes[static_cast<std::size_t>(schemeIndex)].title,
                     std::to_string(winsNeeded) + (cfg.winByKills ? " Kills" : " Wins") + " to win match",  // messages 211, 208/209
-                    std::string("Team play: ") + (teamPlay ? "ON (teams from the scheme)" : "OFF")};
-                for (int r = 0; r < 4; ++r) {
+                    std::string("Team play: ") + (teamPlay ? "ON (teams from the scheme)" : "OFF"),
+                    "Map size: " + (mapRepeat == 1 ? std::string("Normal") : std::to_string(mapRepeat) + " x " + std::to_string(mapRepeat)) + " (" +
+                        std::to_string(mapRepeat * ab::kGridW) + " x " + std::to_string(mapRepeat * ab::kGridH) + " cells)"};
+                for (int r = 0; r < 5; ++r) {
                     // Rows from (55,170) every 24 px (original value 735).
                     const float y = 170.0f + 24.0f * static_cast<float>(r);
                     renderer.text(*spritesPtr, lines[r], 56, y + 1, 0, 0, 0);
