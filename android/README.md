@@ -6,7 +6,7 @@ The Android app is the same game: the C++ code of the repository built with the 
 
 - Without anything else it plays with the **free asset set** (made by the program itself). With a copy of the original game it plays with the original's data: see below.
 - **Touch controls**: a direction pad at the bottom left, two buttons at the bottom right (red: bomb, also Enter in the menus; blue: action, also Space), and two small ones at the top (left: back / Esc, right: chat). The phone's back key is Esc too. On a wide screen the game sits in the middle and the controls beside it.
-- A **gamepad** or a **keyboard** connected to the device works as on a desktop.
+- A **gamepad** or a **keyboard** connected to the device works as on a desktop. While a gamepad is connected or in use the touch controls are out of sight; a finger on the screen brings them back (that touch presses nothing), and they come back by themselves when the last gamepad is pulled out.
 - **Network games**: joining works as on a desktop. Hosting from the phone works on a local network; from outside it depends on the phone's network letting connections in, which mobile networks do not.
 - Landscape only. OpenGL ES 3.0 and Android 7.0 (API 24) or later.
 
@@ -53,4 +53,4 @@ The APK is signed with the debug key of whichever machine built it. It installs 
 
 ## State
 
-Built and started on the Android emulator (API 34, x86_64): the title, the menus, a local match and the touch controls were seen working. The import of the original data was run there too, both ways (the folder chooser from the first start and from Options; a copy pushed into the app's folder): first-start note, conversion with its progress screen (260 data files, 971 sounds), original intro and menu afterwards, no second conversion on the next start. Not yet run on a real phone or tablet; sound was not listened to; network play from the app was not tried.
+Built and started on the Android emulator (API 34, x86_64): the title, the menus, a local match and the touch controls were seen working. The import of the original data was run there too, both ways (the folder chooser from the first start and from Options; a copy pushed into the app's folder): first-start note, conversion with its progress screen (260 data files, 971 sounds), original intro and menu afterwards, no second conversion on the next start. A player uses it on a real phone with a gamepad (Xiaomi Mi 9, GameSir G8 Galileo over USB-C); nothing more than that is known about real devices. Sound was not listened to; network play from the app was not tried.

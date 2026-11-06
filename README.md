@@ -113,7 +113,7 @@ The program opens on the main menu. Choose **Start Game**, set up the player lis
 
 These are the original's default keys. Change them under **Options → Define keyboard layouts**.
 
-Connected gamepads appear in the player list as `JOY n` (left stick or d-pad to move, A / cross to bomb, B or X / circle or square for the action). A gamepad also works the menus: d-pad or left stick for the arrows, A to confirm, B to go back, Start for the way out of a local match and for the menu of a network match. A gamepad plugged in while the game runs is taken up. Gamepad support is untested with a real controller: none was available, and the checks press the buttons by script.
+Connected gamepads appear in the player list as `JOY n` (left stick or d-pad to move, A / cross to bomb, B or X / circle or square for the action). A gamepad also works the menus: d-pad or left stick for the arrows, A to confirm, B to go back, Start for the way out of a local match and for the menu of a network match. A gamepad plugged in while the game runs is taken up. Gamepad support has seen little of real controllers: a player uses a GameSir G8 Galileo on Android, and otherwise the checks press the buttons by script.
 
 The action button punches the bomb ahead (punch), stops your kicked bombs (kicker) and detonates trigger bombs. Pressing the bomb button while standing on your own bomb picks it up (grab; release to throw) or lays a line (spooge).
 

@@ -18,6 +18,11 @@ class TouchPad {
 public:
     void enable(bool on) { enabled_ = on; }
     bool enabled() const { return enabled_; }
+    // A gamepad is connected or in use: the controls go out of sight and out of action.
+    // The next finger on the screen only brings them back, and presses nothing.
+    void hide();
+    void show() { hidden_ = false; }
+    bool hidden() const { return hidden_; }
 
     // Finger (and, on a desktop, mouse) events. Sizes are the window's, in the units
     // the mouse reports. Key presses for the menus are pushed onto SDL's event queue.
@@ -46,6 +51,7 @@ private:
     Dir padDirection() const;
 
     bool enabled_ = false;
+    bool hidden_ = false;
     std::array<Finger, 6> fingers_{};
     float aspect_ = 4.0f / 3.0f;
     Dir held_ = kNoDir;             // direction the pad is pushed

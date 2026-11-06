@@ -22,6 +22,7 @@
 #endif
 #include "app/pad_keys.hpp"
 #include "app/screen_keyboard.hpp"
+#include "app/touch.hpp"
 #include "net/server.hpp"
 #include "net/socket.hpp"
 
@@ -53,6 +54,77 @@ int g_checks = 0;
     } while (0)
 
 using Keys = std::vector<PadKey>;
+
+// The on-screen controls give way to a gamepad, and a finger brings them back.
+void testTouchPadAndGamepad() {
+    CHECK(SDL_Init(SDL_INIT_EVENTS));
+    constexpr int w = 1000, h = 500;
+    constexpr float bombX = 0.935f, bombY = 0.80f;   // on the bomb button of a 2:1 screen
+    constexpr float rightX = 0.15f, rightY = 0.74f;  // on the direction pad, pushed right
+    const auto finger = [](SDL_EventType type, SDL_FingerID id, float x, float y) {
+        SDL_Event e{};
+        e.type = type;
+        e.tfinger.fingerID = id;
+        e.tfinger.x = x;
+        e.tfinger.y = y;
+        return e;
+    };
+    // The keys the controls pressed since the last look.
+    const auto keysPressed = []() {
+        std::array<SDL_Event, 16> events{};
+        return SDL_PeepEvents(events.data(), static_cast<int>(events.size()), SDL_GETEVENT, SDL_EVENT_KEY_DOWN, SDL_EVENT_KEY_DOWN);
+    };
+    TouchPad touch;
+    touch.enable(true);
+    CHECK(!touch.hidden());
+    touch.handle(finger(SDL_EVENT_FINGER_DOWN, 1, bombX, bombY), w, h);
+    CHECK(touch.input().button1);
+    CHECK(keysPressed() == 1);
+    touch.handle(finger(SDL_EVENT_FINGER_UP, 1, bombX, bombY), w, h);
+    CHECK(!touch.input().button1);
+
+    // The gamepad is used with thumbs on the controls: nothing stays pressed.
+    touch.handle(finger(SDL_EVENT_FINGER_DOWN, 1, bombX, bombY), w, h);
+    touch.handle(finger(SDL_EVENT_FINGER_DOWN, 2, rightX, rightY), w, h);
+    CHECK(touch.input().button1 && touch.input().dir[1]);
+    keysPressed();
+    touch.hide();
+    CHECK(touch.hidden());
+    CHECK(!touch.input().button1 && !touch.input().dir[1]);
+    // Those fingers leaving, and a finger sliding, do not bring the controls back.
+    touch.handle(finger(SDL_EVENT_FINGER_UP, 1, bombX, bombY), w, h);
+    touch.handle(finger(SDL_EVENT_FINGER_UP, 2, rightX, rightY), w, h);
+    touch.handle(finger(SDL_EVENT_FINGER_MOTION, 3, bombX, bombY), w, h);
+    CHECK(touch.hidden());
+
+    // A touch brings them back and presses nothing, not even the button under it.
+    touch.handle(finger(SDL_EVENT_FINGER_DOWN, 3, bombX, bombY), w, h);
+    CHECK(!touch.hidden());
+    CHECK(!touch.input().button1);
+    touch.handle(finger(SDL_EVENT_FINGER_MOTION, 3, rightX, rightY), w, h);
+    CHECK(!touch.input().dir[1]);
+    touch.handle(finger(SDL_EVENT_FINGER_UP, 3, rightX, rightY), w, h);
+    CHECK(keysPressed() == 0);
+    // The next touch works as usual.
+    touch.handle(finger(SDL_EVENT_FINGER_DOWN, 4, bombX, bombY), w, h);
+    CHECK(touch.input().button1);
+    CHECK(keysPressed() == 1);
+    touch.handle(finger(SDL_EVENT_FINGER_UP, 4, bombX, bombY), w, h);
+
+    // The last gamepad pulled out: they are back and work at once.
+    touch.hide();
+    touch.show();
+    CHECK(!touch.hidden());
+    touch.handle(finger(SDL_EVENT_FINGER_DOWN, 5, bombX, bombY), w, h);
+    CHECK(touch.input().button1);
+    keysPressed();
+
+    // Without on-screen controls (a desktop) there is nothing to hide.
+    TouchPad off;
+    off.hide();
+    CHECK(!off.hidden());
+    SDL_Quit();
+}
 
 void testPadKeys() {
     PadKeys pad;
@@ -726,6 +798,7 @@ void testTournamentByPad() {
 int main() {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     const std::vector<std::pair<std::string, std::function<void()>>> tests = {
+        {"on-screen controls and a gamepad", testTouchPadAndGamepad},
         {"pad keys", testPadKeys},
         {"on-screen keyboard", testScreenKeyboard},
         {"network screens by pad", testScreensByPad},

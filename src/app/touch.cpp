@@ -82,6 +82,14 @@ void TouchPad::release(int role) {
     if (!still) pressed_[static_cast<std::size_t>(role - 1)] = false;
 }
 
+void TouchPad::hide() {
+    if (!enabled_ || hidden_) return;
+    hidden_ = true;
+    fingers_ = {};
+    pressed_ = {};
+    held_ = kNoDir;
+}
+
 void TouchPad::handle(const SDL_Event& e, int windowW, int windowH) {
     if (!enabled_ || windowW <= 0 || windowH <= 0) return;
     aspect_ = static_cast<float>(windowW) / static_cast<float>(windowH);
@@ -100,6 +108,11 @@ void TouchPad::handle(const SDL_Event& e, int windowW, int windowH) {
         move = true;
         x = e.motion.x / static_cast<float>(windowW), y = e.motion.y / static_cast<float>(windowH);
     } else {
+        return;
+    }
+    if (hidden_) {
+        // Controls out of sight press nothing: this touch only brings them back.
+        if (down) hidden_ = false;
         return;
     }
     Finger* finger = nullptr;
@@ -149,7 +162,7 @@ PlayerInput TouchPad::input() const {
 }
 
 void TouchPad::draw(Renderer& r, int pixelW, int pixelH) {
-    if (!enabled_ || pixelW <= 0 || pixelH <= 0) return;
+    if (!enabled_ || hidden_ || pixelW <= 0 || pixelH <= 0) return;
     if (disc_ == 0) disc_ = r.frameTexture(0, 96, 96, discPixels(false));
     if (ring_ == 0) ring_ = r.frameTexture(0, 96, 96, discPixels(true));
     const auto h = static_cast<float>(pixelH);

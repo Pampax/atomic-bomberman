@@ -253,6 +253,8 @@ ab::PlayerInput keyboardInput(const bool* keys, const std::array<int, 6>& set) {
 // tell them from a real keyboard's (a text field then shows its on-screen keyboard).
 constexpr SDL_KeyboardID kPadKeyboard = 0xAB0001;
 
+constexpr int kStickDead = 13107;  // 40 % of full deflection
+
 // Gamepad as a player's controller. Directions follow the original's joystick rule
 // (axis below 30 % or above 70 % of its range), plus the d-pad.
 ab::PlayerInput gamepadInput(SDL_Gamepad* pad) {
@@ -260,7 +262,7 @@ ab::PlayerInput gamepadInput(SDL_Gamepad* pad) {
     if (pad == nullptr) return in;
     const int x = SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFTX);
     const int y = SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFTY);
-    const int dead = 13107;  // 40 % of full deflection
+    const int dead = kStickDead;
     in.dir = {y < -dead || SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_DPAD_UP),
               x > dead || SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_DPAD_RIGHT),
               y > dead || SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_DPAD_DOWN),
@@ -1158,6 +1160,7 @@ int runGame(int argc, char** argv, bool& again) {
         };
         ab::TouchPad touch;  // on-screen controls: always on a phone, --touch elsewhere
         touch.enable(opt.touch);
+        if (padCount > 0) touch.hide();  // with a gamepad they stay out of sight until a finger asks for them
         bool paused = false;
         int frame = 0;
         int step = 0;
@@ -1181,6 +1184,7 @@ int runGame(int argc, char** argv, bool& again) {
                     press.type = SDL_EVENT_MOUSE_BUTTON_UP;
                 } else if (k.rfind("pad=", 0) == 0) {
                     // A gamepad button: a b x y start up down left right.
+                    touch.hide();
                     static const char* const kNames[9] = {"up", "right", "down", "left", "a", "b", "x", "y", "start"};
                     for (int b = 0; b < 9; ++b)
                         if (k.substr(4) == kNames[b]) {
@@ -1214,12 +1218,14 @@ int runGame(int argc, char** argv, bool& again) {
                     touch.handle(e, ww, wh);
                 }
                 if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN || e.type == SDL_EVENT_GAMEPAD_BUTTON_UP) {
+                    if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) touch.hide();
                     if (const ab::PadKeys::Button b = padButton(e.gbutton.button); b != ab::PadKeys::Button::Count)
                         padKeys.button(b, e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN, SDL_GetTicks());
                     pushPadKeys();
                     continue;
                 }
                 if (e.type == SDL_EVENT_GAMEPAD_AXIS_MOTION) {
+                    if (e.gaxis.value > kStickDead || e.gaxis.value < -kStickDead) touch.hide();  // not for a stick's small tremble
                     for (std::size_t i = 0; i < pads.size(); ++i)
                         if (pads[i] != nullptr && SDL_GetGamepadID(pads[i]) == e.gaxis.which)
                             padKeys.stick(static_cast<int>(i), SDL_GetGamepadAxis(pads[i], SDL_GAMEPAD_AXIS_LEFTX),
@@ -1237,6 +1243,7 @@ int runGame(int argc, char** argv, bool& again) {
                             known = true;
                         }
                     for (padCount = 4; padCount > 0 && pads[static_cast<std::size_t>(padCount - 1)] == nullptr;) --padCount;
+                    touch.hide();
                     continue;
                 }
                 if (e.type == SDL_EVENT_GAMEPAD_REMOVED) {
@@ -1247,6 +1254,7 @@ int runGame(int argc, char** argv, bool& again) {
                             padKeys.stick(static_cast<int>(i), 0, 0, SDL_GetTicks());
                         }
                     for (padCount = 4; padCount > 0 && pads[static_cast<std::size_t>(padCount - 1)] == nullptr;) --padCount;
+                    if (padCount == 0) touch.show();
                     continue;
                 }
                 // A phone's back key is Esc.
