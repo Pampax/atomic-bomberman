@@ -247,10 +247,11 @@ struct Scheme {
     std::array<std::array<Tile, kGridW>, kGridH> tiles{};
     int brickDensity = 100;  // percent of brick cells kept
     std::array<Cell, kMaxPlayers> start{};
-    // A big map: this field repeated, side by side (1 x 1 is the classic game). The size is
+    // The map this layout fills (the classic field, or a shape from kMapShapes). The shape is
     // chosen for the match, so it is not part of a scheme file.
-    int repeatX = 1;
-    int repeatY = 1;
+    int mapW = kGridW;
+    int mapH = kGridH;
+    bool mirrored = false;
 
     // Blank field with solid pillars at odd column and odd row.
     static Scheme pillars();
@@ -288,14 +289,16 @@ public:
     void tick(int dtMs, const std::array<PlayerInput, kMaxPlayers>& input);
 
     // --- the map ---
-    // Its size in cells: the classic 15 x 11, or that repeated (Scheme::repeatX, repeatY).
+    // Its size in cells: the classic 15 x 11, or another (Scheme::mapW, mapH).
     int gridW() const { return gridW_; }
     int gridH() const { return gridH_; }
     bool inGrid(Cell c) const { return c.x >= 0 && c.x < gridW_ && c.y >= 0 && c.y < gridH_; }
-    // How many copies of the classic field it holds, and how many fit along its longer side.
-    int mapBlocks() const { return gridW_ / kGridW * (gridH_ / kGridH); }
-    int mapScale() const { return std::max(gridW_ / kGridW, gridH_ / kGridH); }
-    bool bigMap() const { return mapBlocks() > 1; }
+    // How many classic fields it holds by surface, and that many's square root (both rounded).
+    int mapBlocks() const { return (gridW_ * gridH_ + kGridW * kGridH / 2) / (kGridW * kGridH); }
+    int mapScale() const { return mapScaleOf(gridW_, gridH_); }
+    bool bigMap() const { return gridW_ != kGridW || gridH_ != kGridH; }
+    // The cell of the classic field that a cell of the map takes after (its ground, its layout).
+    Cell sourceCell(Cell c) const { return mapSourceCell(c, mirrored_); }
 
     // --- state access ---
     Tile tile(Cell c) const;  // outside the grid: Solid
@@ -505,6 +508,8 @@ private:
     // is not in World::archive: a state only loads into a World of the same size.
     int gridW_ = kGridW;
     int gridH_ = kGridH;
+    bool mirrored_ = false;
+    int closingRings() const { return (enclosementDepth_ * 2 * gridH_ + kGridH / 2) / kGridH; }
     std::vector<Tile> tiles_;      // gridW_ x gridH_ cells, row by row
     std::vector<Flame> flames_;
     std::vector<Powerup> powerups_;

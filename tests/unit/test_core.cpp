@@ -2360,7 +2360,17 @@ void testAssetImport() {
 // program's own rules, so nothing here was observed on it.
 Scheme repeatedPillars(int repeat) {
     Scheme s = Scheme::pillars();
-    s.repeatX = s.repeatY = repeat;
+    s.mapW = kGridW * repeat;
+    s.mapH = kGridH * repeat;
+    return s;
+}
+
+Scheme shapedPillars(std::size_t size, std::size_t format) {
+    const MapShape& shape = kMapShapes[size][format];
+    Scheme s = Scheme::pillars();
+    s.mapW = shape.w;
+    s.mapH = shape.h;
+    s.mirrored = shape.mirrored;
     return s;
 }
 
@@ -2404,7 +2414,7 @@ void testBigMapLayout() {
     Fixture many(repeatedPillars(99), 1);
     CHECK_EQ(many.w.gridW(), kMaxGridW);
     Scheme wide = Scheme::pillars();
-    wide.repeatX = 3;
+    wide.mapW = 45;
     Fixture strip(wide, 2);
     CHECK_EQ(strip.w.gridW(), 45);
     CHECK_EQ(strip.w.gridH(), 11);
@@ -2486,7 +2496,8 @@ void testBigMapPlay() {
         return n;
     };
     const int oneField = hidden(bricks);
-    bricks.repeatX = bricks.repeatY = 3;
+    bricks.mapW = 45;
+    bricks.mapH = 33;
     CHECK(oneField > 0);
     CHECK(hidden(bricks) >= oneField * 7);
 
@@ -2534,25 +2545,186 @@ void testBigMapPlay() {
     smaller.startRound(Scheme::pillars(), false);
     CHECK(!smaller.loadState(state));
 
-    // The choice of size is kept with the settings.
+    // The choices are kept with the settings.
     Settings chosen;
-    CHECK_EQ(chosen.mapRepeat, 1);
-    chosen.mapRepeat = 3;
+    CHECK_EQ(chosen.mapSize, 0);
+    CHECK_EQ(chosen.mapFormat, 0);
+    chosen.mapSize = 2;
+    chosen.mapFormat = 1;
     Settings read;
     read.parse(chosen.serialize());
-    CHECK_EQ(read.mapRepeat, 3);
-    read.parse("map_repeat=9\n");
-    CHECK_EQ(read.mapRepeat, kMaxMapRepeat);
+    CHECK_EQ(read.mapSize, 2);
+    CHECK_EQ(read.mapFormat, 1);
+    read.parse("map_size=9\nmap_format=9\n");
+    CHECK_EQ(read.mapSize, 2);
+    CHECK_EQ(read.mapFormat, 2);
+}
+
+// Screen formats: the same rows as the map size, the columns to fill the screen's shape.
+void testMapFormats() {
+    // Size and format: rows from the size, and a shape near the format's. A map fills a screen
+    // when (w + 1) / (h + 1) is the screen's ratio, as the classic field does 4:3.
+    const std::array<double, 3> ratios{4.0 / 3.0, 16.0 / 9.0, 21.0 / 9.0};
+    for (std::size_t size = 0; size < kMapShapes.size(); ++size) {
+        for (std::size_t format = 0; format < ratios.size(); ++format) {
+            const MapShape& shape = kMapShapes[size][format];
+            CHECK(shape.w <= kMaxGridW);
+            CHECK(shape.h <= kMaxGridH);
+            CHECK(std::abs(static_cast<double>(shape.w + 1) / static_cast<double>(shape.h + 1) - ratios[format]) / ratios[format] < 0.035);
+            if (format > 0) {
+                CHECK(shape.mirrored);
+                CHECK(shape.w % 2 == 1 && shape.h % 2 == 1);
+                CHECK(shape.h == kMapShapes[size][1].h);
+            }
+        }
+    }
+    CHECK(!kMapShapes[0][0].mirrored);
+    CHECK_EQ(kMapShapes[0][0].w, kGridW);
+    CHECK_EQ(kMapShapes[0][0].h, kGridH);
+
+    for (std::size_t size = 0; size < kMapShapes.size(); ++size) {
+        for (std::size_t format = 1; format < ratios.size(); ++format) {
+            const MapShape& shape = kMapShapes[size][format];
+            Fixture f(shapedPillars(size, format), kMaxPlayers);
+            CHECK_EQ(f.w.gridW(), shape.w);
+            CHECK_EQ(f.w.gridH(), shape.h);
+            CHECK(f.w.bigMap());
+            // Folded over at its edges, the field keeps its pillars in step all over the map.
+            for (int y = 0; y < shape.h; ++y)
+                for (int x = 0; x < shape.w; ++x) {
+                    const bool pillar = (x % 2 == 1) && (y % 2 == 1);
+                    CHECK(f.w.tile({x, y}) == (pillar ? Tile::Solid : Tile::Blank));
+                }
+            // The start cells stretch with the map: corners stay corners, nobody on a pillar.
+            CHECK(f.cellOf(0) == (Cell{0, 0}));
+            CHECK(f.cellOf(1) == (Cell{shape.w - 1, shape.h - 1}));
+            CHECK(f.cellOf(2) == (Cell{0, shape.h - 1}));
+            CHECK(f.cellOf(3) == (Cell{shape.w - 1, 0}));
+            for (int i = 0; i < kMaxPlayers; ++i) {
+                CHECK(f.w.inGrid(f.cellOf(i)));
+                CHECK(f.w.tile(f.cellOf(i)) == Tile::Blank);
+                for (int j = 0; j < i; ++j) CHECK(!(f.cellOf(i) == f.cellOf(j)));
+            }
+        }
+    }
+
+    // A scheme's own layout is folded over: what lies at x from the edge lies at x from the fold.
+    Scheme uneven = shapedPillars(0, 2);  // 27 x 11
+    uneven.tiles[2][2] = Tile::Brick;
+    World folded(Values::defaults(), 5);
+    folded.startRound(uneven, false);
+    CHECK(folded.tile({2, 2}) == Tile::Brick);
+    CHECK(folded.tile({26, 2}) == Tile::Brick);  // 14 + 12
+    CHECK(folded.tile({4, 2}) == Tile::Blank);
+    CHECK(folded.sourceCell({26, 2}) == (Cell{2, 2}));
+    CHECK(folded.sourceCell({14, 2}) == (Cell{14, 2}));
+    CHECK(folded.sourceCell({15, 2}) == (Cell{13, 2}));
+
+    // The level's features fold with the field, and an arrow points as in a mirror.
+    Scheme wide = shapedPillars(1, 1);  // 41 x 23
+    World w(Values::defaults(), 7);
+    w.startRound(wide, false);
+    Extra arrow, a, b, spring;
+    arrow.type = ExtraType::Arrow;
+    arrow.cell = {4, 2};
+    arrow.dir = 1;
+    a.type = b.type = ExtraType::Warp;
+    a.cell = {2, 2}, a.id = 1, a.linkTo = 2;
+    b.cell = {12, 8}, b.id = 2, b.linkTo = 1;
+    spring.type = ExtraType::Trampoline;
+    spring.cell = {-1, -1};
+    w.setExtras({arrow, a, b, spring});
+    const auto at = [&](Cell c, ExtraType type) -> const Extra* {
+        for (const Extra& e : w.extras())
+            if (e.cell == c && e.type == type) return &e;
+        return nullptr;
+    };
+    CHECK(at({4, 2}, ExtraType::Arrow) != nullptr && at({4, 2}, ExtraType::Arrow)->dir == 1);
+    CHECK(at({24, 2}, ExtraType::Arrow) != nullptr && at({24, 2}, ExtraType::Arrow)->dir == 3);  // folded: points the other way
+    CHECK(at({32, 2}, ExtraType::Arrow) != nullptr && at({32, 2}, ExtraType::Arrow)->dir == 1);  // folded twice
+    int springs = 0, warps = 0;
+    for (const Extra& e : w.extras()) {
+        CHECK(w.inGrid(e.cell));
+        springs += e.type == ExtraType::Trampoline ? 1 : 0;
+        if (e.type != ExtraType::Warp) continue;
+        ++warps;
+        // Each warp left leads to a partner in its own copy of the field.
+        int partners = 0;
+        for (const Extra& o : w.extras()) partners += o.type == ExtraType::Warp && o.id == e.linkTo ? 1 : 0;
+        CHECK_EQ(partners, 1);
+    }
+    CHECK_EQ(springs, w.mapBlocks());
+    CHECK(warps >= 8);
+    CHECK_EQ(warps % 2, 0);
+
+    // The clock follows the map's surface; the normal rows in 16:9 are about the normal field.
+    const Values values = Values::defaults();
+    RoundSetup setup;
+    setup.present[0] = setup.present[1] = true;
+    World round(values, 3);
+    const std::array<std::array<int, 3>, 3> seconds{{{150, 150, 150}, {300, 300, 450}, {450, 450, 600}}};
+    for (std::size_t size = 0; size < kMapShapes.size(); ++size)
+        for (std::size_t format = 0; format < ratios.size(); ++format) {
+            setup.scheme = shapedPillars(size, format);
+            applyRoundSetup(round, values, setup);
+            CHECK_EQ(round.secondsLeft(), seconds[size][format]);
+        }
+
+    // The closing walls on a wide map: rings by its rows, in about the classic field's time.
+    Fixture closing(shapedPillars(1, 2), 2);  // 55 x 23
+    closing.place(0, {26, 12});
+    closing.place(1, {28, 12});
+    closing.w.setEnclosementDepth(1);
+    closing.w.setRoundSeconds(60);
+    closing.run(6 * 20);
+    closing.run(25 * 20);
+    CHECK(closing.w.tile({26, 0}) == Tile::Solid);
+    CHECK(closing.w.tile({26, 3}) == Tile::Solid);  // 2 x 23 / 11 = 4 rings
+    CHECK(closing.w.tile({26, 4}) == Tile::Blank);
+    CHECK(closing.w.player(0).alive && closing.w.player(1).alive);
+
+    // A state goes only into a World with a map of the same shape.
+    Fixture from(shapedPillars(2, 2), 2);
+    from.w.createBomb(0, {70, 30}, BombType::Regular, 2, 40);
+    from.run(5);
+    const std::vector<std::uint8_t> state = from.w.saveState();
+    World same(Values::defaults(), 9);
+    same.startRound(shapedPillars(2, 2), false);
+    CHECK(same.loadState(state));
+    CHECK_EQ(same.stateHash(), from.w.stateHash());
+    World other(Values::defaults(), 9);
+    other.startRound(shapedPillars(2, 1), false);
+    CHECK(!other.loadState(state));
 }
 
 // Ten computer players on the biggest map: they play it out, the same way every time.
 void testBigMapComputerPlayers() {
-    Scheme s = Scheme::pillars();
+    Scheme s = shapedPillars(2, 2);
     for (auto& row : s.tiles)
         for (Tile& t : row)
             if (t == Tile::Blank) t = Tile::Brick;
-    s.repeatX = s.repeatY = kMaxMapRepeat;
     s.brickDensity = 60;
+    // On every other shape too, for a while.
+    for (std::size_t size = 0; size < kMapShapes.size(); ++size)
+        for (std::size_t format = 0; format < kMapShapes[size].size(); ++format) {
+            Scheme shaped = s;
+            const MapShape& shape = kMapShapes[size][format];
+            shaped.mapW = shape.w;
+            shaped.mapH = shape.h;
+            shaped.mirrored = shape.mirrored;
+            World w(Values::defaults(), 21);
+            w.startRound(shaped, true);
+            for (int i = 0; i < kMaxPlayers; ++i) w.addPlayer(i);
+            w.endStartFreeze();
+            std::vector<AiPlayer> ai;
+            for (int i = 0; i < kMaxPlayers; ++i) ai.emplace_back(static_cast<std::uint32_t>(i) * 977u + 5u);
+            for (int step = 0; step < 300 && !w.roundOver(); ++step) {
+                Inputs in{};
+                for (int i = 0; i < kMaxPlayers; ++i) in[static_cast<std::size_t>(i)] = ai[static_cast<std::size_t>(i)].decide(w, i, 50);
+                w.tick(50, in);
+            }
+            CHECK(w.tickCount() > 0);
+        }
     const auto play = [&](std::uint32_t seed, int* bricksLeft, int* steps) {
         World w(Values::defaults(), seed);
         w.startRound(s, true);
@@ -2663,6 +2835,7 @@ int main() {
         {"typed text", testTypedText},
         {"big map layout", testBigMapLayout},
         {"big map play", testBigMapPlay},
+        {"map formats", testMapFormats},
         {"big map computer players", testBigMapComputerPlayers},
     };
     for (const auto& [name, fn] : tests) {

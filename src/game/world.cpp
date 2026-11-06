@@ -78,10 +78,9 @@ World::World(const Values& values, std::uint32_t seed) : values_(values), rng_(s
 }
 
 void World::startRound(const Scheme& scheme, bool generatePowerups) {
-    const int blocksX = std::clamp(scheme.repeatX, 1, kMaxMapRepeat);
-    const int blocksY = std::clamp(scheme.repeatY, 1, kMaxMapRepeat);
-    gridW_ = kGridW * blocksX;
-    gridH_ = kGridH * blocksY;
+    gridW_ = std::clamp(scheme.mapW, kGridW, kMaxGridW);
+    gridH_ = std::clamp(scheme.mapH, kGridH, kMaxGridH);
+    mirrored_ = scheme.mirrored;
     const auto cells = static_cast<std::size_t>(gridW_ * gridH_);
     tiles_.assign(cells, Tile::Blank);
     tickCount_ = 0;
@@ -102,9 +101,27 @@ void World::startRound(const Scheme& scheme, bool generatePowerups) {
     events_.clear();
     players_ = {};
     startCells_ = scheme.start;
-    if (bigMap()) {
-        // Each player takes its own start cell, in the copy of the field that falls to it.
-        const std::vector<int> order = spreadBlocks(blocksX, blocksY);
+    const auto schemeTile = [&](Cell c) {
+        const Cell from = sourceCell(c);
+        return scheme.tiles[static_cast<std::size_t>(from.y)][static_cast<std::size_t>(from.x)];
+    };
+    if (bigMap() && mirrored_) {
+        // A map in a screen's shape: the start cells keep their places, stretched to its size
+        // (corners stay corners), and step aside from what would be a solid cell there.
+        for (Cell& c : startCells_) {
+            const Cell at{(c.x * (gridW_ - 1) + (kGridW - 1) / 2) / (kGridW - 1), (c.y * (gridH_ - 1) + (kGridH - 1) / 2) / (kGridH - 1)};
+            const std::array<Cell, 5> tries{at, Cell{at.x + 1, at.y}, Cell{at.x - 1, at.y}, Cell{at.x, at.y + 1}, Cell{at.x, at.y - 1}};
+            c = at;
+            for (const Cell t : tries)
+                if (inGrid(t) && schemeTile(t) != Tile::Solid) {
+                    c = t;
+                    break;
+                }
+        }
+    } else if (bigMap()) {
+        // Copies of the field: each player takes its own start cell, in the copy that falls to it.
+        const int blocksX = gridW_ / kGridW;
+        const std::vector<int> order = spreadBlocks(blocksX, gridH_ / kGridH);
         for (std::size_t i = 0; i < startCells_.size(); ++i) {
             const int block = order[i % order.size()];
             startCells_[i].x += (block % blocksX) * kGridW;
@@ -118,7 +135,7 @@ void World::startRound(const Scheme& scheme, bool generatePowerups) {
 
     for (int y = 0; y < gridH_; ++y)
         for (int x = 0; x < gridW_; ++x) {
-            Tile t = scheme.tiles[static_cast<std::size_t>(y % kGridH)][static_cast<std::size_t>(x % kGridW)];
+            Tile t = schemeTile({x, y});
             // Each brick of the scheme is kept with probability density / 100.
             if (t == Tile::Brick && rng_.below(100) >= scheme.brickDensity) t = Tile::Blank;
             tiles_[index({x, y})] = t;
@@ -128,7 +145,7 @@ void World::startRound(const Scheme& scheme, bool generatePowerups) {
     for (int type = 0; type <= kPowRandom; ++type) {
         const int n = values_.get(vid::kLevelCount + type);
         const bool chancy = n < 0;  // negative: |n| attempts at 1 in 10
-        // A big map holds as many per copy of the field.
+        // A bigger map holds as many per field's surface.
         for (int k = 0; k < std::abs(n) * mapBlocks(); ++k) {
             if (chancy && rng_.below(10) != 0) continue;
             for (int attempt = 0; attempt < 200; ++attempt) {
@@ -335,22 +352,57 @@ void World::addPlayer(int i) {
 }
 
 void World::setExtras(const std::vector<Extra>& extras, int conveyorSpeedSetting) {
-    // A big map repeats the level's features with its field. A warp stays linked to the
+    // A bigger map repeats the level's features with its field. A warp stays linked to the
     // warps of its own copy: their numbers are kept apart per copy.
-    constexpr int kWarpIdsPerBlock = 1000;
+    constexpr int kWarpIdsPerCopy = 1000;
     extras_.clear();
-    int block = 0;
-    for (int by = 0; by < gridH_ / kGridH; ++by)
-        for (int bx = 0; bx < gridW_ / kGridW; ++bx, ++block)
-            for (Extra e : extras) {
-                if (ab::inGrid(e.cell)) {
-                    e.cell.x += bx * kGridW;
-                    e.cell.y += by * kGridH;
-                }
-                e.id += block * kWarpIdsPerBlock;
-                e.linkTo += block * kWarpIdsPerBlock;
-                extras_.push_back(e);
+    if (mirrored_) {
+        const int periodX = 2 * (kGridW - 1), periodY = 2 * (kGridH - 1);
+        for (const Extra& source : extras) {
+            if (!ab::inGrid(source.cell)) {  // no fixed place: as many as the map has fields
+                for (int n = 0; n < mapBlocks(); ++n) extras_.push_back(source);
+                continue;
             }
+            for (int y = 0; y < gridH_; ++y)
+                for (int x = 0; x < gridW_; ++x) {
+                    if (!(sourceCell({x, y}) == source.cell)) continue;
+                    Extra e = source;
+                    e.cell = {x, y};
+                    // Folded over, an arrow or a belt points the other way, as in a mirror.
+                    const bool flippedX = x % periodX >= kGridW, flippedY = y % periodY >= kGridH;
+                    if ((flippedX && (e.dir & 1) != 0) || (flippedY && (e.dir & 1) == 0)) e.dir = opposite(e.dir);
+                    const int copy = x / (kGridW - 1) + 10 * (y / (kGridH - 1));
+                    e.id += copy * kWarpIdsPerCopy;
+                    e.linkTo += copy * kWarpIdsPerCopy;
+                    extras_.push_back(e);
+                }
+        }
+        // The map ends part way through a fold: a warp whose partner fell outside it goes.
+        for (bool removed = true; removed;) {
+            const std::size_t before = extras_.size();
+            const std::vector<Extra> all = extras_;
+            extras_.erase(std::remove_if(extras_.begin(), extras_.end(),
+                                         [&all](const Extra& e) {
+                                             if (e.type != ExtraType::Warp) return false;
+                                             return std::none_of(all.begin(), all.end(), [&e](const Extra& o) { return o.type == ExtraType::Warp && o.id == e.linkTo && !(o.cell == e.cell); });
+                                         }),
+                          extras_.end());
+            removed = extras_.size() != before;
+        }
+    } else {
+        int block = 0;
+        for (int by = 0; by < gridH_ / kGridH; ++by)
+            for (int bx = 0; bx < gridW_ / kGridW; ++bx, ++block)
+                for (Extra e : extras) {
+                    if (ab::inGrid(e.cell)) {
+                        e.cell.x += bx * kGridW;
+                        e.cell.y += by * kGridH;
+                    }
+                    e.id += block * kWarpIdsPerCopy;
+                    e.linkTo += block * kWarpIdsPerCopy;
+                    extras_.push_back(e);
+                }
+    }
     // Extras without a fixed position go on a random cell that is not solid and not taken.
     for (Extra& e : extras_) {
         if (inGrid(e.cell)) continue;
@@ -1123,9 +1175,9 @@ void World::updateEnclosement(int dt) {
                                      [](const Extra& e) { return e.type == ExtraType::Warp || e.type == ExtraType::Trampoline; }),
                       extras_.end());
     }
-    // A big map closes as much of itself in the same time as the classic field does:
+    // A bigger map closes as much of itself in about the same time as the classic field does:
     // proportionally more rings, its many more cells each in proportionally less time.
-    const int rings = enclosementDepth_ * 2 * mapScale();
+    const int rings = closingRings();
     if (walls_.ring >= rings) return;
     const int cellMs = 250 / mapBlocks();
 
@@ -1161,7 +1213,7 @@ void World::updateEnclosement(int dt) {
 void World::regenerateTile(int dt) {
     if (regenerationSeconds_ <= 0 || contenders_ <= 1) return;
     regenerationMs_ += dt;
-    if (regenerationMs_ <= regenerationSeconds_ * 1000 / mapBlocks()) return;  // the same pace per copy of the field
+    if (regenerationMs_ <= regenerationSeconds_ * 1000 / mapBlocks()) return;  // the same pace per field's surface
     regenerationMs_ = 0;
     const int radius = values_.get(vid::kRegenerationClearRadius);
     for (int attempt = 0; attempt < 100; ++attempt) {
@@ -1182,7 +1234,7 @@ void World::regenerateTile(int dt) {
 // The same walk as updateEnclosement, without closing anything (original 0x42690D).
 std::vector<Cell> World::upcomingWallCells(int count) const {
     std::vector<Cell> cells;
-    const int rings = enclosementDepth_ * 2 * mapScale();
+    const int rings = closingRings();
     if (!walls_.armed || walls_.ring >= rings) return cells;
     Cell cursor = walls_.cursor;
     Dir dir = walls_.dir;

@@ -43,7 +43,7 @@ void AiPlayer::buildDanger(const World& w) {
 // at 100 + 10 per cell of warning, falling by 10 with each cell further ahead (0x42692D).
 void AiPlayer::markWalls(const World& w) {
     constexpr int kAhead = 15;
-    // On a big map the walls run proportionally faster: the same warning in time is more cells.
+    // On a bigger map the walls run proportionally faster: the same warning in time is more cells.
     const int blocks = w.mapBlocks();
     int cellsAhead = kAhead * blocks;
     for (const Cell c : w.upcomingWallCells(kAhead * blocks)) {
@@ -139,7 +139,7 @@ static int walkerFlood(const std::array<bool, kMaxCells>& passable, int gridW, i
 }
 
 // The same answer as blocked() for every cell, with each bomb looked at once instead of once
-// per cell: the search runs often, and a big map has nine times the cells.
+// per cell: the search runs often, and a bigger map has up to nine times the cells.
 std::array<bool, kMaxCells> AiPlayer::passability(const World& w) const {
     std::array<bool, kMaxCells> grid;
     for (int y = 0; y < gridH_; ++y)

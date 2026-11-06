@@ -40,10 +40,6 @@ public:
               SpriteBank* sprites = nullptr, const std::array<int, kMaxPlayers>* wins = nullptr,
               const std::array<int, kMaxPlayers>* killsBefore = nullptr);
 
-    // On a big map the view follows these players (those played on this computer); when none
-    // of them is left in play it takes in those who are.
-    void setFollowed(const std::array<bool, kMaxPlayers>& players) { followed_ = players; }
-
     // Building blocks for menu screens, in the 640x480 logical screen. With clear off,
     // what follows is drawn over the picture already there (text over the playfield).
     void begin(int windowW, int windowH, bool clear = true);
@@ -78,17 +74,11 @@ private:
     void digit(int value, float x, float y, float r, float g, float b);
     void drawShapes(const World& world, const RenderSnapshot& previous, float alpha);
     void drawSprites(const World& world, const RenderSnapshot& previous, float alpha, SpriteBank& bank);
-    // A big map does not fit the logical screen: a view of it under a band for the labels.
+    // A bigger map does not fit the logical screen: all of it, scaled to the window under a
+    // band for the labels. No distortion: what the window's shape leaves over stays black.
     void drawBigMap(const World& world, const RenderSnapshot& previous, float alpha, int windowW, int windowH,
                     SpriteBank* sprites, const std::array<int, kMaxPlayers>* wins, const std::array<int, kMaxPlayers>* killsBefore);
     void drawBigGround(const World& world, const SpriteBank& bank);
-
-    std::array<bool, kMaxPlayers> followed_{};
-    float cameraX_ = 0, cameraY_ = 0, cameraZoom_ = 1;
-    int cameraTick_ = -1;  // the step last drawn; -1 or an earlier one: the view jumps instead of gliding
-    float cameraSeconds_ = 0;  // the round's time when last drawn
-    // The cells worth drawing: the whole grid, or on a big map those in view.
-    int firstCellX_ = 0, firstCellY_ = 0, endCellX_ = kGridW, endCellY_ = kGridH;
 
     // Sparkles around the gold player (original: up to 100, sequence "goldman").
     struct Sparkle {

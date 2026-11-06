@@ -70,7 +70,8 @@ struct Options {
     int attractSeconds = -1;  // --attract-seconds N: idle time on the menu before the demo (default: value 92)
     bool debug = false;       // --debug: the original's debug keys (it used the KWD environment variable)
     bool noIntro = false;     // --no-intro: go straight to the main menu
-    int mapRepeat = 0;        // --map-size N: the field repeated N x N times (0: as last chosen)
+    int mapSize = -1;         // --map-size: normal, medium, big (-1: as last chosen)
+    int mapFormat = -1;       // --map-format: the screen the map is to fill: 4:3, 16:9, 21:9 (-1: as last chosen)
     int windowW = 0;          // --window WxH: the window's size, for trying other screen shapes on a desktop
     int windowH = 0;
 #ifdef __ANDROID__
@@ -135,7 +136,8 @@ Options parseArgs(int argc, char** argv) {
                       "  --native             640x480 window\n"
                       "  --gles               OpenGL ES 3.0 instead of OpenGL 3.3 (what phones use)\n"
                       "  --touch              on-screen controls (as on a phone), worked with the mouse\n"
-                      "  --map-size N         a local match on the field repeated N x N times (1-3)\n"
+                      "  --map-size SIZE      a local match's map: normal, medium or big\n"
+                      "  --map-format RATIO   the screen that map is to fill: 4:3, 16:9 or 21:9\n"
                       "  --window WxH         the window's size (to try another screen's shape)\n"
                       "  --shapes             plain shapes instead of the game's graphics\n"
                       "Testing: --demo --frames N --screenshot FILE --result-shot --menu-shot N --script KEYS");
@@ -179,7 +181,22 @@ Options parseArgs(int argc, char** argv) {
         else if (a == "--no-intro") o.noIntro = true;
         else if (a == "--gles") o.gles = true;
         else if (a == "--touch") o.touch = true;
-        else if (a == "--map-size") o.mapRepeat = std::clamp(std::atoi(next().c_str()), 1, ab::kMaxMapRepeat);
+        else if (a == "--map-size" || a == "--map-format") {
+            const bool format = a == "--map-format";
+            std::string wanted = next();
+            for (char& ch : wanted) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+            int found = -1;
+            for (std::size_t n = 0; n < ab::kMapSizeNames.size(); ++n) {
+                std::string name = format ? ab::kMapFormatNames[n] : ab::kMapSizeNames[n];
+                for (char& ch : name) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+                if (name == wanted) found = static_cast<int>(n);
+            }
+            if (found < 0) {
+                std::fprintf(stderr, "ERROR unknown value %s for %s (see --help)\n", wanted.c_str(), a.c_str());
+                std::exit(2);
+            }
+            (format ? o.mapFormat : o.mapSize) = found;
+        }
         else if (a == "--window") std::sscanf(next().c_str(), "%dx%d", &o.windowW, &o.windowH);
         else if (a == "--free") o.freeAssets = true;
         else if (a == "--debug") o.debug = true;
@@ -573,7 +590,8 @@ int runGame(int argc, char** argv, bool& again) {
     const bool useSettings = opt.frames <= 0 && !opt.demo && opt.script.empty() && !settingsPath.empty();
     if (useSettings && cfg.load(settingsPath)) std::fprintf(stderr, "INFO  Settings: %s\n", settingsPath.c_str());
     bool randomLevel = !opt.levelSet && cfg.level < 0;
-    int mapRepeat = opt.mapRepeat > 0 ? opt.mapRepeat : cfg.mapRepeat;
+    int mapSize = opt.mapSize >= 0 ? opt.mapSize : cfg.mapSize;
+    int mapFormat = opt.mapFormat >= 0 ? opt.mapFormat : cfg.mapFormat;
     if (!opt.levelSet) opt.level = std::max(0, cfg.level);
     if (!opt.winsSet) opt.wins = cfg.winsNeeded;
     if (!opt.schemeSet && useSettings) {
@@ -655,7 +673,8 @@ int runGame(int argc, char** argv, bool& again) {
         auto saveSettings = [&]() {
             cfg.level = randomLevel ? -1 : level;
             cfg.winsNeeded = winsNeeded;
-            cfg.mapRepeat = mapRepeat;
+            cfg.mapSize = mapSize;
+            cfg.mapFormat = mapFormat;
             cfg.teamPlay = teamPlay;
             if (!schemes.empty()) {
                 cfg.scheme = schemes[static_cast<std::size_t>(schemeIndex)].file;
@@ -881,8 +900,13 @@ int runGame(int argc, char** argv, bool& again) {
             setup.level = level;
             setup.scheme = scheme;
             setup.scheme.start = startCells;
-            // A big map is for the ordinary local match, not for a campaign's stages or the demo.
-            setup.scheme.repeatX = setup.scheme.repeatY = campaignMode || attract ? 1 : mapRepeat;
+            // A bigger map is for the ordinary local match, not for a campaign's stages or the demo.
+            if (!campaignMode && !attract) {
+                const ab::MapShape& shape = ab::kMapShapes[static_cast<std::size_t>(mapSize)][static_cast<std::size_t>(mapFormat)];
+                setup.scheme.mapW = shape.w;
+                setup.scheme.mapH = shape.h;
+                setup.scheme.mirrored = shape.mirrored;
+            }
             setup.powers = schemePowers;
             setup.extras = extras;
             setup.conveyorSpeed = cfg.conveyorSpeed;
@@ -895,16 +919,13 @@ int runGame(int argc, char** argv, bool& again) {
             setup.winByKills = cfg.winByKills;
             setup.campaign = campaignMode;
             int n = 0;
-            std::array<bool, ab::kMaxPlayers> playedHere{};
             for (int i = 0; i < ab::kMaxPlayers; ++i) {
                 const Control c = control[static_cast<std::size_t>(i)];
                 setup.present[static_cast<std::size_t>(i)] = c != Control::Off;
                 // Computer players are marked: the level's control delay is for humans only.
                 setup.human[static_cast<std::size_t>(i)] = c != Control::Ai;
-                playedHere[static_cast<std::size_t>(i)] = c != Control::Off && c != Control::Ai;
                 n += c != Control::Off ? 1 : 0;
             }
-            renderer.setFollowed(playedHere);
             if (campaignMode) {
                 const ab::CampaignStage& st = stages[static_cast<std::size_t>(stageIndex)];
                 setup.ghosts = st.ghosts, setup.ghostSpeed = st.ghostSpeed;
@@ -1673,10 +1694,11 @@ int runGame(int argc, char** argv, bool& again) {
                 } else if (screen == Screen::LevelSetup) {
                     // Level, scheme and match length, as on the original's second pre-game screen.
                     const int d = key == SDLK_RIGHT ? 1 : key == SDLK_LEFT ? -1 : 0;
-                    if (key == SDLK_UP) setupRow = (setupRow + 4) % 5;
-                    if (key == SDLK_DOWN) setupRow = (setupRow + 1) % 5;
+                    if (key == SDLK_UP) setupRow = (setupRow + 5) % 6;
+                    if (key == SDLK_DOWN) setupRow = (setupRow + 1) % 6;
                     if (d != 0 && setupRow == 3) teamPlay = !teamPlay;
-                    if (d != 0 && setupRow == 4) mapRepeat = (mapRepeat - 1 + d + ab::kMaxMapRepeat) % ab::kMaxMapRepeat + 1;
+                    if (d != 0 && setupRow == 4) mapSize = (mapSize + d + static_cast<int>(ab::kMapSizeNames.size())) % static_cast<int>(ab::kMapSizeNames.size());
+                    if (d != 0 && setupRow == 5) mapFormat = (mapFormat + d + static_cast<int>(ab::kMapFormatNames.size())) % static_cast<int>(ab::kMapFormatNames.size());
                     if (d != 0 && setupRow == 0) {
                         // Random Each Game, then the eleven levels.
                         const int choice = ((randomLevel ? -1 : level) + d + 1 + 12) % 12 - 1;
@@ -2254,14 +2276,15 @@ int runGame(int argc, char** argv, bool& again) {
                                             400.0f + 20.0f + 40.0f * static_cast<float>(px), 100.0f + 35.0f + 36.0f * static_cast<float>(py));
                         }
                 }
-                const std::string lines[5] = {
+                const ab::MapShape& shape = ab::kMapShapes[static_cast<std::size_t>(mapSize)][static_cast<std::size_t>(mapFormat)];
+                const std::string lines[6] = {
                     randomLevel ? "Random Each Game" : ab::kLevelName[level],
                     schemes.empty() ? std::string("(built-in arena)") : "Scheme: " + schemes[static_cast<std::size_t>(schemeIndex)].title,
                     std::to_string(winsNeeded) + (cfg.winByKills ? " Kills" : " Wins") + " to win match",  // messages 211, 208/209
                     std::string("Team play: ") + (teamPlay ? "ON (teams from the scheme)" : "OFF"),
-                    "Map size: " + (mapRepeat == 1 ? std::string("Normal") : std::to_string(mapRepeat) + " x " + std::to_string(mapRepeat)) + " (" +
-                        std::to_string(mapRepeat * ab::kGridW) + " x " + std::to_string(mapRepeat * ab::kGridH) + " cells)"};
-                for (int r = 0; r < 5; ++r) {
+                    std::string("Map size: ") + ab::kMapSizeNames[static_cast<std::size_t>(mapSize)],
+                    std::string("Screen format: ") + ab::kMapFormatNames[static_cast<std::size_t>(mapFormat)] + " (" + std::to_string(shape.w) + " x " + std::to_string(shape.h) + " cells)"};
+                for (int r = 0; r < 6; ++r) {
                     // Rows from (55,170) every 24 px (original value 735).
                     const float y = 170.0f + 24.0f * static_cast<float>(r);
                     renderer.text(*spritesPtr, lines[r], 56, y + 1, 0, 0, 0);

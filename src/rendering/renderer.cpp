@@ -296,10 +296,6 @@ void Renderer::draw(const World& world, const RenderSnapshot& prev, float alpha,
         drawBigMap(world, prev, alpha, windowW, windowH, sprites, wins, killsBefore);
         return;
     }
-    cameraTick_ = -1;
-    firstCellX_ = firstCellY_ = 0;
-    endCellX_ = world.gridW();
-    endCellY_ = world.gridH();
     begin(windowW, windowH);
     if (sprites != nullptr && sprites->loaded())
         drawSprites(world, prev, alpha, *sprites);
@@ -310,92 +306,30 @@ void Renderer::draw(const World& world, const RenderSnapshot& prev, float alpha,
 }
 
 namespace {
-// Around a big map's field, as on the classic screen: the frame of the background picture.
+// Around a bigger map's field, as on the classic screen: the frame of the background picture.
 constexpr float kFrameTop = 20.0f;     // above the field
 constexpr float kFrameBottom = 16.0f;  // below it
 constexpr float kFrameSide = 20.0f;
-constexpr float kLabelBand = 50.0f;    // the height of the band for the labels, in logical pixels
-constexpr float kKeepInViewMargin = 110.0f;  // around the players the view must show
+constexpr float kLabelBand = 48.0f;    // the band for the labels above the frame, in pixels of the classic screen
 }  // namespace
 
 void Renderer::drawBigMap(const World& world, const RenderSnapshot& prev, float alpha, int windowW, int windowH,
                           SpriteBank* sprites, const std::array<int, kMaxPlayers>* wins, const std::array<int, kMaxPlayers>* killsBefore) {
     begin(windowW, windowH);  // clears, and readies the program
     const auto winW = static_cast<float>(windowW), winH = static_cast<float>(windowH);
-    // One logical pixel is as big as on the classic screen, so a cell keeps its size and a
-    // wide screen simply shows more of the map.
-    const float scale = std::min(winW / kScreenW, winH / kScreenH);
-    const float band = (winH - kScreenH * scale) / 2.0f + kLabelBand * scale;
-    const float viewPixelsH = std::max(1.0f, winH - band);
-    const float baseW = winW / scale, baseH = viewPixelsH / scale;
-
-    const float left = 0, top = static_cast<float>(kOriginY) - kFrameTop;
-    const float right = static_cast<float>(2 * kOriginX + world.gridW() * kCellW);
-    const float bottom = static_cast<float>(kOriginY + world.gridH() * kCellH) + kFrameBottom;
-    const float wholeMap = std::min(baseW / (right - left), baseH / (bottom - top));
-
-    // What to keep in view: the followed players; when none of them is in play, whoever is.
-    float minX = 0, maxX = 0, minY = 0, maxY = 0;
-    int inView = 0;
-    const auto take = [&](int i) {
-        const auto index = static_cast<std::size_t>(i);
-        const Player& p = world.player(i);
-        const float x = p.alive ? lerp(prev.players[index].x, p.x, alpha) : static_cast<float>(p.x);
-        const float y = p.alive ? lerp(prev.players[index].y, p.y, alpha) : static_cast<float>(p.y);
-        minX = inView == 0 ? x : std::min(minX, x);
-        maxX = inView == 0 ? x : std::max(maxX, x);
-        minY = inView == 0 ? y : std::min(minY, y);
-        maxY = inView == 0 ? y : std::max(maxY, y);
-        ++inView;
-    };
-    for (int i = 0; i < kMaxPlayers; ++i) {
-        const Player& p = world.player(i);
-        if (followed_[static_cast<std::size_t>(i)] && p.present && (p.alive || p.dying)) take(i);
-    }
-    const bool following = inView > 0;
-    if (!following)
-        for (int i = 0; i < kMaxPlayers; ++i)
-            if (world.player(i).present && world.player(i).alive) take(i);
-
-    float wantedX = (left + right) / 2.0f, wantedY = (top + bottom) / 2.0f, wantedZoom = wholeMap;
-    if (inView > 0) {
-        wantedX = (minX + maxX) / 2.0f;
-        wantedY = (minY + maxY) / 2.0f;
-        // One player at the classic size; several: as far out as it takes to show them all.
-        wantedZoom = 1.0f;
-        if (inView > 1 || !following)
-            wantedZoom = std::clamp(std::min(baseW / (maxX - minX + 2.0f * kKeepInViewMargin), baseH / (maxY - minY + 2.0f * kKeepInViewMargin)),
-                                    std::min(wholeMap, 1.0f), 1.0f);
-    }
-
-    // The view glides towards that, on the game's own time: it rests while the game is paused.
-    const float seconds = (static_cast<float>(world.roundMs()) + alpha * static_cast<float>(kFrameMs)) / 1000.0f;
-    const float elapsed = seconds - cameraSeconds_;
-    cameraSeconds_ = seconds;
-    const bool jump = cameraTick_ < 0 || world.tickCount() < cameraTick_;  // a new round
-    cameraTick_ = world.tickCount();
-    const float glide = jump ? 1.0f : 1.0f - std::exp(-std::max(0.0f, elapsed) / 0.10f);
-    cameraX_ += (wantedX - cameraX_) * glide;
-    cameraY_ += (wantedY - cameraY_) * glide;
-    cameraZoom_ += (wantedZoom - cameraZoom_) * glide;
-
-    // The rectangle of the map in view: inside the map, or centred on it where it is the smaller.
-    const float viewW = baseW / cameraZoom_, viewH = baseH / cameraZoom_;
-    const float cx = viewW >= right - left ? (left + right) / 2.0f : std::clamp(cameraX_, left + viewW / 2.0f, right - viewW / 2.0f);
-    const float cy = viewH >= bottom - top ? (top + bottom) / 2.0f : std::clamp(cameraY_, top + viewH / 2.0f, bottom - viewH / 2.0f);
-    // On whole screen pixels, so that the tiles do not shimmer as the view moves.
-    const float pixel = scale * cameraZoom_;
-    const float viewLeft = std::round((cx - viewW / 2.0f) * pixel) / pixel;
-    const float viewTop = std::round((cy - viewH / 2.0f) * pixel) / pixel;
-
-    firstCellX_ = std::clamp(static_cast<int>((viewLeft - static_cast<float>(kOriginX)) / static_cast<float>(kCellW)) - 2, 0, world.gridW());
-    firstCellY_ = std::clamp(static_cast<int>((viewTop - static_cast<float>(kOriginY)) / static_cast<float>(kCellH)) - 2, 0, world.gridH());
-    endCellX_ = std::clamp(static_cast<int>((viewLeft + viewW - static_cast<float>(kOriginX)) / static_cast<float>(kCellW)) + 3, 0, world.gridW());
-    endCellY_ = std::clamp(static_cast<int>((viewTop + viewH - static_cast<float>(kOriginY)) / static_cast<float>(kCellH)) + 3, 0, world.gridH());
-
-    glViewport(0, 0, windowW, static_cast<int>(viewPixelsH));  // under the band
-    const float sx = 2.0f / viewW, sy = -2.0f / viewH;
-    const float proj[16] = {sx, 0, 0, 0, 0, sy, 0, 0, 0, 0, -1, 0, -1.0f - viewLeft * sx, 1.0f - viewTop * sy, 0, 1};
+    // The labels at the size they have on the classic screen; under them all of the map, as
+    // big as the window allows, the same scale both ways.
+    const float labelScale = std::min(winW / kScreenW, winH / kScreenH);
+    const float band = (winH - kScreenH * labelScale) / 2.0f + kLabelBand * labelScale;
+    const float top = static_cast<float>(kOriginY) - kFrameTop;
+    const float mapW = 2.0f * kFrameSide + static_cast<float>(world.gridW() * kCellW);
+    const float mapH = kFrameTop + static_cast<float>(world.gridH() * kCellH) + kFrameBottom;
+    const float scale = std::min(winW / mapW, std::max(1.0f, winH - band) / mapH);
+    const float pixelsW = mapW * scale, pixelsH = mapH * scale;
+    glViewport(static_cast<int>((winW - pixelsW) / 2.0f + 0.5f), static_cast<int>((winH - band - pixelsH) / 2.0f + 0.5f),
+               static_cast<int>(pixelsW + 0.5f), static_cast<int>(pixelsH + 0.5f));
+    const float sx = 2.0f / mapW, sy = -2.0f / mapH;
+    const float proj[16] = {sx, 0, 0, 0, 0, sy, 0, 0, 0, 0, -1, 0, -1.0f, 1.0f - top * sy, 0, 1};
     glUniformMatrix4fv(projLoc_, 1, GL_FALSE, proj);
     if (sprites != nullptr && sprites->loaded())
         drawSprites(world, prev, alpha, *sprites);
@@ -411,36 +345,40 @@ void Renderer::drawBigMap(const World& world, const RenderSnapshot& prev, float 
     flush();
 }
 
-// The field of the level's background picture, once per copy of the field, in its frame.
+// Each cell's ground from the field of the level's background picture, in its frame.
 void Renderer::drawBigGround(const World& world, const SpriteBank& bank) {
     const unsigned picture = bank.background();
     constexpr int kW = static_cast<int>(kScreenW), kH = static_cast<int>(kScreenH);
-    const int fieldW = kGridW * kCellW, fieldH = kGridH * kCellH;
     const int frameTop = static_cast<int>(kFrameTop), frameBottom = static_cast<int>(kFrameBottom), side = static_cast<int>(kFrameSide);
-    const int blocksX = world.gridW() / kGridW, blocksY = world.gridH() / kGridH;
     const auto ox = static_cast<float>(kOriginX), oy = static_cast<float>(kOriginY);
+    const float rightX = ox + static_cast<float>(world.gridW() * kCellW), bottomY = oy + static_cast<float>(world.gridH() * kCellH);
     if (picture == 0) {
-        quad(0, oy - kFrameTop, 2 * ox + static_cast<float>(world.gridW() * kCellW), static_cast<float>(world.gridH() * kCellH) + kFrameTop + kFrameBottom, 0.10f, 0.12f, 0.16f);
+        quad(0, oy - kFrameTop, rightX + kFrameSide, bottomY - oy + kFrameTop + kFrameBottom, 0.10f, 0.12f, 0.16f);
         return;
     }
-    const float rightX = ox + static_cast<float>(blocksX * fieldW), bottomY = oy + static_cast<float>(blocksY * fieldH);
-    for (int by = 0; by < blocksY; ++by)
-        for (int bx = 0; bx < blocksX; ++bx)
-            pictureRegion(picture, kW, kH, kOriginX, kOriginY, fieldW, fieldH, ox + static_cast<float>(bx * fieldW), oy + static_cast<float>(by * fieldH));
-    for (int bx = 0; bx < blocksX; ++bx) {
-        const float x = ox + static_cast<float>(bx * fieldW);
-        pictureRegion(picture, kW, kH, kOriginX, kOriginY - frameTop, fieldW, frameTop, x, oy - kFrameTop);
-        pictureRegion(picture, kW, kH, kOriginX, kOriginY + fieldH, fieldW, frameBottom, x, bottomY);
+    const int fieldRight = kOriginX + kGridW * kCellW, fieldBottom = kOriginY + kGridH * kCellH;
+    for (int y = 0; y < world.gridH(); ++y)
+        for (int x = 0; x < world.gridW(); ++x) {
+            const Cell from = world.sourceCell({x, y});
+            pictureRegion(picture, kW, kH, kOriginX + from.x * kCellW, kOriginY + from.y * kCellH, kCellW, kCellH,
+                          ox + static_cast<float>(x * kCellW), oy + static_cast<float>(y * kCellH));
+        }
+    for (int x = 0; x < world.gridW(); ++x) {
+        const int from = kOriginX + world.sourceCell({x, 0}).x * kCellW;
+        const float at = ox + static_cast<float>(x * kCellW);
+        pictureRegion(picture, kW, kH, from, kOriginY - frameTop, kCellW, frameTop, at, oy - kFrameTop);
+        pictureRegion(picture, kW, kH, from, fieldBottom, kCellW, frameBottom, at, bottomY);
     }
-    for (int by = 0; by < blocksY; ++by) {
-        const float y = oy + static_cast<float>(by * fieldH);
-        pictureRegion(picture, kW, kH, 0, kOriginY, side, fieldH, 0, y);
-        pictureRegion(picture, kW, kH, kOriginX + fieldW, kOriginY, side, fieldH, rightX, y);
+    for (int y = 0; y < world.gridH(); ++y) {
+        const int from = kOriginY + world.sourceCell({0, y}).y * kCellH;
+        const float at = oy + static_cast<float>(y * kCellH);
+        pictureRegion(picture, kW, kH, 0, from, side, kCellH, 0, at);
+        pictureRegion(picture, kW, kH, fieldRight, from, side, kCellH, rightX, at);
     }
     pictureRegion(picture, kW, kH, 0, kOriginY - frameTop, side, frameTop, 0, oy - kFrameTop);
-    pictureRegion(picture, kW, kH, kOriginX + fieldW, kOriginY - frameTop, side, frameTop, rightX, oy - kFrameTop);
-    pictureRegion(picture, kW, kH, 0, kOriginY + fieldH, side, frameBottom, 0, bottomY);
-    pictureRegion(picture, kW, kH, kOriginX + fieldW, kOriginY + fieldH, side, frameBottom, rightX, bottomY);
+    pictureRegion(picture, kW, kH, fieldRight, kOriginY - frameTop, side, frameTop, rightX, oy - kFrameTop);
+    pictureRegion(picture, kW, kH, 0, fieldBottom, side, frameBottom, 0, bottomY);
+    pictureRegion(picture, kW, kH, fieldRight, fieldBottom, side, frameBottom, rightX, bottomY);
 }
 
 // Seven-segment digit, 14 x 24 px. Stand-in until the original font files are decoded.
@@ -467,9 +405,13 @@ void Renderer::drawHud(const World& world, SpriteBank* bank, const std::array<in
         // The original's clock: "numeric font" digits (index 10 is the colon) starting at
         // x 525, baseline y 36, 4 px between glyphs (values 110-112).
         if (left >= 0) {
-            const int glyphs[4] = {left / 60, 10, (left % 60) / 10, left % 10};
+            const int minutes = left / 60;
+            const int glyphs[5] = {minutes >= 10 ? minutes / 10 : -1, minutes % 10, 10, (left % 60) / 10, left % 10};
             float x = 525.0f;
+            if (minutes >= 10)  // the tens of minutes go in front of the usual place
+                if (const auto s = bank->sprite("numeric font", glyphs[0], -1)) x -= static_cast<float>(s->width + 4);
             for (int g : glyphs) {
+                if (g < 0) continue;
                 const auto s = bank->sprite("numeric font", g, -1);
                 if (!s) continue;
                 textured(s->texture, x - static_cast<float>(s->hotX), 36.0f - static_cast<float>(s->hotY),
@@ -485,6 +427,7 @@ void Renderer::drawHud(const World& world, SpriteBank* bank, const std::array<in
         const bool red = left < 31;
         const float r = red ? 0.95f : 0.85f, g = red ? 0.25f : 0.75f, b = red ? 0.20f : 0.35f;
         const float x = 520.0f, y = 10.0f;
+        if (left / 60 >= 10) digit(left / 600, x - 20, y, r, g, b);
         digit(left / 60, x, y, r, g, b);
         quad(x + 20, y + 6, 3, 3, r, g, b);
         quad(x + 20, y + 16, 3, 3, r, g, b);
@@ -564,8 +507,8 @@ void Renderer::drawSprites(const World& world, const RenderSnapshot& prev, float
         }
     }
 
-    for (int y = firstCellY_; y < endCellY_; ++y)
-        for (int x = firstCellX_; x < endCellX_; ++x) {
+    for (int y = 0; y < world.gridH(); ++y)
+        for (int x = 0; x < world.gridW(); ++x) {
             const auto rx = static_cast<float>(cellToPixelX(x));
             const auto ry = static_cast<float>(cellToPixelY(y));
             const Tile t = world.tile({x, y});
@@ -713,8 +656,8 @@ void Renderer::drawShapes(const World& world, const RenderSnapshot& prev, float 
 
     const auto cw = static_cast<float>(kCellW);
     const auto ch = static_cast<float>(kCellH);
-    for (int y = firstCellY_; y < endCellY_; ++y)
-        for (int x = firstCellX_; x < endCellX_; ++x) {
+    for (int y = 0; y < world.gridH(); ++y)
+        for (int x = 0; x < world.gridW(); ++x) {
             const float px = static_cast<float>(kOriginX + x * kCellW);
             const float py = static_cast<float>(kOriginY + y * kCellH);
             const bool dark = ((x + y) & 1) != 0;

@@ -1,7 +1,5 @@
 #include "game/match.hpp"
 
-#include <algorithm>
-
 namespace ab {
 
 void applyRoundSetup(World& world, const Values& base, const RoundSetup& setup) {
@@ -9,8 +7,8 @@ void applyRoundSetup(World& world, const Values& base, const RoundSetup& setup) 
     world.setValue(vid::kEnclosementDepth, setup.enclosementDepth);
     world.setValue(vid::kWallsDetonateBombs, setup.stompedBombsDetonate ? 1 : 0);
     world.setValue(vid::kDiseasesDestroyable, setup.diseasesDestroyable ? 1 : 0);
-    // A big map takes as many times longer to cross, so its clock runs that much longer.
-    const int mapScale = std::clamp(std::max(setup.scheme.repeatX, setup.scheme.repeatY), 1, kMaxMapRepeat);
+    // A bigger map takes longer to cross, so its clock runs that much longer.
+    const int mapScale = mapScaleOf(setup.scheme.mapW, setup.scheme.mapH);
     world.setValue(vid::kRoundSeconds, setup.playTime >= kInfinitePlayTime ? setup.playTime : setup.playTime * mapScale);
     world.setWinByKills(setup.winByKills);
     world.setLevelRules(base.has(450 + setup.level) ? base.get(450 + setup.level) : 0,
