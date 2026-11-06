@@ -58,7 +58,9 @@ int g_checks = 0;
 
 void testJson() {
     Json j;
-    CHECK(Json::parse(R"( {"a": 1, "b": [true, false, null, -2.5e1, "x\ny\u00e9\ud83d\ude00"], "c": {"d": "e"}, "big": 9007199254740992} )", j));
+    // (Raw strings holding backslashes stay out of the macro's arguments: MSVC 14.41 reads their escapes there.)
+    const std::string parsedText = R"( {"a": 1, "b": [true, false, null, -2.5e1, "x\ny\u00e9\ud83d\ude00"], "c": {"d": "e"}, "big": 9007199254740992} )";
+    CHECK(Json::parse(parsedText, j));
     CHECK(j.isObject() && j["a"].integer() == 1 && j["b"].items().size() == 5);
     CHECK(j["b"].items()[0].boolean() && !j["b"].items()[1].boolean() && j["b"].items()[2].isNull());
     CHECK(j["b"].items()[3].number() == -25.0);
@@ -73,7 +75,8 @@ void testJson() {
     CHECK_TEXT(again.dump(), j.dump());
     Json made = Json::object();
     made.set("name", "a \"quoted\" \\ name\t").set("n", 42).set("list", Json::array().push(1).push("two"));
-    CHECK_TEXT(made.dump(), R"({"list":[1,"two"],"n":42,"name":"a \"quoted\" \\ name\t"})");
+    const std::string madeText = R"({"list":[1,"two"],"n":42,"name":"a \"quoted\" \\ name\t"})";
+    CHECK_TEXT(made.dump(), madeText);
     // Refused: anything that is not exactly one JSON value.
     for (const char* bad : {"", "{", "[1,]", "{\"a\":}", "{'a':1}", "01", "1 2", "\"unterminated", "\"bad \\x escape\"", "nul", "{\"a\":1,}", "[1 2]", "\"\\ud83d\"", "-", "1.", "1e"}) {
         Json none;
