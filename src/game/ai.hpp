@@ -19,7 +19,7 @@ public:
     PlayerInput decide(const World& world, int self, int dtMs);
 
 private:
-    using Grid = std::array<int, kGridW * kGridH>;
+    using Grid = std::array<int, kMaxCells>;
 
     void buildDanger(const World& w);
     void markWalls(const World& w);
@@ -27,15 +27,19 @@ private:
     bool blocked(const World& w, Cell c) const;      // tile or bomb
     bool safeWalkable(const World& w, Cell c) const; // free, no flame, no danger
     // First step of a route through unblocked cells; kNoDir if none within maxDepth passes.
-    std::array<bool, kGridW * kGridH> passability(const World& w) const;
+    std::array<bool, kMaxCells> passability(const World& w) const;
     Dir pathStep(const World& w, Cell from, Cell to, int maxDepth);
     // Nearest cell with lower danger than `from`; returns the first step and the cell.
     Dir stepToSafety(const World& w, Cell from, Cell* target);
     bool nearestPowerup(const World& w, Cell from, int maxDepth, Cell* found);
     int pickTarget(const World& w, int self);
     void press(bool& button, bool& toggle);
+    bool inGrid(Cell c) const { return c.x >= 0 && c.x < gridW_ && c.y >= 0 && c.y < gridH_; }
+    std::size_t idx(Cell c) const { return static_cast<std::size_t>(c.y * gridW_ + c.x); }
 
     Rng rng_;
+    int gridW_ = kGridW;  // the size of the map in this round
+    int gridH_ = kGridH;
     Cell spawn_{};       // where this round began for the player (the attack behaviour keeps away from it)
     int lastTick_ = -1;
     Grid danger_{};

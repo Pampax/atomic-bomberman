@@ -23,6 +23,7 @@ Numbers written as `V(n)` are entries of the original `data/res/valuelst.res`; t
 | `players.md` | Player state, input, actions, death |
 | `bombs.md` | Bomb lifecycle, fuse, kicked/punched/held bombs |
 | `explosions.md` | Blast propagation, flames, interactions |
+| `big-maps.md` | Maps made of several copies of the field. **Not in the original**: this project's own design |
 | `powerups.md` | Types, generation, pickup, diseases |
 | `game-modes.md` | Pre-game screens, free-for-all, team play, match flow |
 

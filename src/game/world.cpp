@@ -12,6 +12,31 @@ constexpr int kOutsurviveFrames = 25;  // frames a dying player still counts as 
 
 bool isOverpowered(int type) { return type == kPowPunch || type == kPowGrab || type == kPowSuperDisease; }
 
+// A big map: the order in which the copies of the field (numbered row by row) go to the
+// players. Each next copy is the one farthest from those given out so far, so that a few
+// players start far apart and the map fills evenly as more join.
+std::vector<int> spreadBlocks(int blocksX, int blocksY) {
+    const int blocks = blocksX * blocksY;
+    std::vector<int> order{0};
+    std::vector<bool> used(static_cast<std::size_t>(blocks), false);
+    used[0] = true;
+    while (static_cast<int>(order.size()) < blocks) {
+        int best = -1, bestDistance = -1;
+        for (int b = 0; b < blocks; ++b) {
+            if (used[static_cast<std::size_t>(b)]) continue;
+            int nearest = 1 << 30;
+            for (const int o : order) {
+                const int dx = b % blocksX - o % blocksX, dy = b / blocksX - o / blocksX;
+                nearest = std::min(nearest, dx * dx + dy * dy);
+            }
+            if (nearest > bestDistance) best = b, bestDistance = nearest;
+        }
+        used[static_cast<std::size_t>(best)] = true;
+        order.push_back(best);
+    }
+    return order;
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------- Scheme
@@ -46,9 +71,19 @@ World::World(const Values& values, std::uint32_t seed) : values_(values), rng_(s
     frameMs_ = 1000 / values_.get(vid::kFramesPerSecond);
     nextDudMs_ = 1000LL * (values_.get(vid::kDudMinSeconds) + rng_.below(std::max(1, values_.get(vid::kDudRandomSeconds))));
     bombs_.resize(kMaxBombs);
+    const auto cells = static_cast<std::size_t>(gridW_ * gridH_);
+    tiles_.resize(cells);
+    flames_.resize(cells);
+    powerups_.resize(cells);
 }
 
 void World::startRound(const Scheme& scheme, bool generatePowerups) {
+    const int blocksX = std::clamp(scheme.repeatX, 1, kMaxMapRepeat);
+    const int blocksY = std::clamp(scheme.repeatY, 1, kMaxMapRepeat);
+    gridW_ = kGridW * blocksX;
+    gridH_ = kGridH * blocksY;
+    const auto cells = static_cast<std::size_t>(gridW_ * gridH_);
+    tiles_.assign(cells, Tile::Blank);
     tickCount_ = 0;
     roundMs_ = 0;
     startFreezeMs_ = values_.get(kStartFreezeValue) * frameMs_;
@@ -67,14 +102,23 @@ void World::startRound(const Scheme& scheme, bool generatePowerups) {
     events_.clear();
     players_ = {};
     startCells_ = scheme.start;
+    if (bigMap()) {
+        // Each player takes its own start cell, in the copy of the field that falls to it.
+        const std::vector<int> order = spreadBlocks(blocksX, blocksY);
+        for (std::size_t i = 0; i < startCells_.size(); ++i) {
+            const int block = order[i % order.size()];
+            startCells_[i].x += (block % blocksX) * kGridW;
+            startCells_[i].y += (block / blocksX) * kGridH;
+        }
+    }
     std::fill(bombs_.begin(), bombs_.end(), Bomb{});
-    flames_ = {};
-    powerups_ = {};
+    flames_.assign(cells, Flame{});
+    powerups_.assign(cells, Powerup{});
     pending_.clear();
 
-    for (int y = 0; y < kGridH; ++y)
-        for (int x = 0; x < kGridW; ++x) {
-            Tile t = scheme.tiles[static_cast<std::size_t>(y)][static_cast<std::size_t>(x)];
+    for (int y = 0; y < gridH_; ++y)
+        for (int x = 0; x < gridW_; ++x) {
+            Tile t = scheme.tiles[static_cast<std::size_t>(y % kGridH)][static_cast<std::size_t>(x % kGridW)];
             // Each brick of the scheme is kept with probability density / 100.
             if (t == Tile::Brick && rng_.below(100) >= scheme.brickDensity) t = Tile::Blank;
             tiles_[index({x, y})] = t;
@@ -84,11 +128,12 @@ void World::startRound(const Scheme& scheme, bool generatePowerups) {
     for (int type = 0; type <= kPowRandom; ++type) {
         const int n = values_.get(vid::kLevelCount + type);
         const bool chancy = n < 0;  // negative: |n| attempts at 1 in 10
-        for (int k = 0; k < std::abs(n); ++k) {
+        // A big map holds as many per copy of the field.
+        for (int k = 0; k < std::abs(n) * mapBlocks(); ++k) {
             if (chancy && rng_.below(10) != 0) continue;
             for (int attempt = 0; attempt < 200; ++attempt) {
-                const int cx = rng_.below(kGridW);
-                const int cy = rng_.below(kGridH);
+                const int cx = rng_.below(gridW_);
+                const int cy = rng_.below(gridH_);
                 const Cell c{cx, cy};
                 if (tile(c) == Tile::Brick && powerups_[index(c)].state == PowerupState::None) {
                     powerups_[index(c)] = {PowerupState::Hidden, type};
@@ -152,7 +197,7 @@ bool World::alienPassable(AlienType type, Cell c) const {
 void World::spawnAliens(AlienType type, int count, int speed) {
     for (int n = 0; n < count && aliens_.size() < 100; ++n) {
         for (int attempt = 0; attempt < 200; ++attempt) {
-            const Cell c{rng_.below(kGridW), rng_.below(kGridH)};
+            const Cell c{rng_.below(gridW_), rng_.below(gridH_)};
             if (tile(c) == Tile::Solid) continue;
             bool clear = true;
             for (const Player& p : players_) {
@@ -290,12 +335,27 @@ void World::addPlayer(int i) {
 }
 
 void World::setExtras(const std::vector<Extra>& extras, int conveyorSpeedSetting) {
-    extras_ = extras;
+    // A big map repeats the level's features with its field. A warp stays linked to the
+    // warps of its own copy: their numbers are kept apart per copy.
+    constexpr int kWarpIdsPerBlock = 1000;
+    extras_.clear();
+    int block = 0;
+    for (int by = 0; by < gridH_ / kGridH; ++by)
+        for (int bx = 0; bx < gridW_ / kGridW; ++bx, ++block)
+            for (Extra e : extras) {
+                if (ab::inGrid(e.cell)) {
+                    e.cell.x += bx * kGridW;
+                    e.cell.y += by * kGridH;
+                }
+                e.id += block * kWarpIdsPerBlock;
+                e.linkTo += block * kWarpIdsPerBlock;
+                extras_.push_back(e);
+            }
     // Extras without a fixed position go on a random cell that is not solid and not taken.
     for (Extra& e : extras_) {
         if (inGrid(e.cell)) continue;
         for (int attempt = 0; attempt < 100; ++attempt) {
-            const Cell c{rng_.below(kGridW), rng_.below(kGridH)};
+            const Cell c{rng_.below(gridW_), rng_.below(gridH_)};
             bool taken = tile(c) == Tile::Solid;
             for (const Extra& o : extras_) taken = taken || (&o != &e && o.cell == c);
             if (!taken) {
@@ -304,7 +364,7 @@ void World::setExtras(const std::vector<Extra>& extras, int conveyorSpeedSetting
             }
         }
     }
-    extras_.erase(std::remove_if(extras_.begin(), extras_.end(), [](const Extra& e) { return !inGrid(e.cell); }),
+    extras_.erase(std::remove_if(extras_.begin(), extras_.end(), [this](const Extra& e) { return !inGrid(e.cell); }),
                   extras_.end());
     conveyorSpeed_ = values_.get(vid::kConveyorSpeed + std::clamp(conveyorSpeedSetting, 0, 2));
 }
@@ -616,10 +676,10 @@ void World::flyBomb(Bomb& b, int dt) {
         if (offsetInCellX(nx) == 0 && offsetInCellY(ny) == 0) {
             Cell c = pixelToCell(nx, ny);
             // Beyond one cell outside the field the bomb re-enters from the opposite side.
-            if (c.x >= kGridW + 2) nx -= (kGridW + 3) * kCellW;
-            if (c.x < -1) nx += (kGridW + 3) * kCellW;
-            if (c.y >= kGridH + 2) ny -= (kGridH + 3) * kCellH;
-            if (c.y < -1) ny += (kGridH + 3) * kCellH;
+            if (c.x >= gridW_ + 2) nx -= (gridW_ + 3) * kCellW;
+            if (c.x < -1) nx += (gridW_ + 3) * kCellW;
+            if (c.y >= gridH_ + 2) ny -= (gridH_ + 3) * kCellH;
+            if (c.y < -1) ny += (gridH_ + 3) * kCellH;
             ++b.hops;
             if (b.hops >= 3) {
                 // A bounce point: try to land here.
@@ -714,8 +774,8 @@ void World::detonate(Bomb& b) {
 void World::updateFlames(int dt) {
     const int regular = values_.get(vid::kFlameFrames) * frameMs_;
     const int brick = values_.get(vid::kBrickBurnFrames) * frameMs_;
-    for (int y = 0; y < kGridH; ++y)
-        for (int x = 0; x < kGridW; ++x) {
+    for (int y = 0; y < gridH_; ++y)
+        for (int x = 0; x < gridW_; ++x) {
             Flame& f = flames_[index({x, y})];
             if (!f.active) continue;
             f.ageMs += dt;
@@ -733,7 +793,7 @@ void World::scatterPowerup(int type) {
         Cell c{};
         int inner = 100;
         do {
-            c = {rng_.below(kGridW), rng_.below(kGridH)};
+            c = {rng_.below(gridW_), rng_.below(gridH_)};
             if (--inner < 1) return;
         } while (tile(c) != Tile::Blank);
         if (bombAt(c) == nullptr && look(c).state == PowerupState::None && !anyPlayerAt(c)) {
@@ -757,7 +817,7 @@ void World::revealPowerup(Cell c) {
     if (roundMs_ / 1000 < values_.get(vid::kOverpowerSeconds) && isOverpowered(here.type)) {
         bool swapped = false;
         for (int attempt = 0; attempt < 200 && !swapped; ++attempt) {
-            const Cell o{rng_.below(kGridW), rng_.below(kGridH)};
+            const Cell o{rng_.below(gridW_), rng_.below(gridH_)};
             Powerup& other = look(o);
             if (tile(o) != Tile::Brick || other.state == PowerupState::None) continue;
             if (isOverpowered(other.type)) continue;
@@ -766,7 +826,7 @@ void World::revealPowerup(Cell c) {
         }
         if (!swapped) {
             for (int attempt = 0; attempt < 200; ++attempt) {
-                const Cell o{rng_.below(kGridW), rng_.below(kGridH)};
+                const Cell o{rng_.below(gridW_), rng_.below(gridH_)};
                 if (tile(o) == Tile::Brick && look(o).state == PowerupState::None) {
                     powerups_[index(o)] = here;
                     here = {};
@@ -1063,18 +1123,21 @@ void World::updateEnclosement(int dt) {
                                      [](const Extra& e) { return e.type == ExtraType::Warp || e.type == ExtraType::Trampoline; }),
                       extras_.end());
     }
-    const int rings = enclosementDepth_ * 2;
+    // A big map closes as much of itself in the same time as the classic field does:
+    // proportionally more rings, its many more cells each in proportionally less time.
+    const int rings = enclosementDepth_ * 2 * mapScale();
     if (walls_.ring >= rings) return;
+    const int cellMs = 250 / mapBlocks();
 
     walls_.timerMs += dt;
     // One cell per 250 ms, at most four per tick.
-    for (int n = 0; n < 4 && walls_.timerMs > 250; ++n) {
-        walls_.timerMs -= 250;
+    for (int n = 0; n < 4 && walls_.timerMs > cellMs; ++n) {
+        walls_.timerMs -= cellMs;
         closeCell(walls_.cursor);
 
         Cell next = step(walls_.cursor, walls_.dir);
         const int r = walls_.ring;
-        if (next.x >= kGridW - r || next.y >= kGridH - r || next.x < r || next.y < r) {
+        if (next.x >= gridW_ - r || next.y >= gridH_ - r || next.x < r || next.y < r) {
             // Turn. The corner cell is visited again on the next slot, as in the original.
             walls_.dir = turnRight(walls_.dir);
             next = walls_.cursor;
@@ -1098,11 +1161,11 @@ void World::updateEnclosement(int dt) {
 void World::regenerateTile(int dt) {
     if (regenerationSeconds_ <= 0 || contenders_ <= 1) return;
     regenerationMs_ += dt;
-    if (regenerationMs_ <= regenerationSeconds_ * 1000) return;
+    if (regenerationMs_ <= regenerationSeconds_ * 1000 / mapBlocks()) return;  // the same pace per copy of the field
     regenerationMs_ = 0;
     const int radius = values_.get(vid::kRegenerationClearRadius);
     for (int attempt = 0; attempt < 100; ++attempt) {
-        const Cell c{rng_.below(kGridW), rng_.below(kGridH)};
+        const Cell c{rng_.below(gridW_), rng_.below(gridH_)};
         if (tile(c) != Tile::Blank || look(c).state != PowerupState::None || bombAt(c) != nullptr) continue;
         bool clear = true;
         for (const Player& p : players_) {
@@ -1119,14 +1182,14 @@ void World::regenerateTile(int dt) {
 // The same walk as updateEnclosement, without closing anything (original 0x42690D).
 std::vector<Cell> World::upcomingWallCells(int count) const {
     std::vector<Cell> cells;
-    const int rings = enclosementDepth_ * 2;
+    const int rings = enclosementDepth_ * 2 * mapScale();
     if (!walls_.armed || walls_.ring >= rings) return cells;
     Cell cursor = walls_.cursor;
     Dir dir = walls_.dir;
     int ring = walls_.ring;
     for (int n = 0; n < count; ++n) {
         Cell next = step(cursor, dir);
-        if (next.x >= kGridW - ring || next.y >= kGridH - ring || next.x < ring || next.y < ring) {
+        if (next.x >= gridW_ - ring || next.y >= gridH_ - ring || next.x < ring || next.y < ring) {
             dir = turnRight(dir);
             if (dir == 1) {
                 if (rings <= ring) break;
@@ -1286,7 +1349,7 @@ void World::dropBomb(int i, Cell cell, int delayFrames) {
     }
     int range = p.inventory[kPowFlame];
     if (p.disease[kDisShortFlame]) range = 1;
-    if (p.inventory[kPowGoldflame] > 0) range = std::max(kGridW, kGridH);
+    if (p.inventory[kPowGoldflame] > 0) range = std::max(gridW_, gridH_);
     const int fuse = p.disease[kDisShortFuse] ? p.fuseFrames / 3 : p.fuseFrames;
     int out = 0;
     for (const Bomb& b : bombs_) out += b.active && b.owner == i ? 1 : 0;
@@ -1719,6 +1782,11 @@ template <class A, class T, std::size_t N>
 void field(A& a, std::array<T, N>& items) {
     for (T& item : items) field(a, item);
 }
+// A row with a length both sides know (one item per cell of the map), so no count.
+template <class A, class T>
+void field(A& a, std::vector<T>& items) {
+    for (T& item : items) field(a, item);
+}
 template <class A, class T>
 void field(A& a, std::vector<T>& items, std::size_t limit) {
     const std::size_t n = a.count(items.size(), limit);
@@ -1811,7 +1879,7 @@ void World::archive(A& a) {
     field(a, flames_);
     if (a.publicView && !A::reading) {
         // Hidden powerups are nobody's business yet.
-        std::array<Powerup, kGridW * kGridH> shown = powerups_;
+        std::vector<Powerup> shown = powerups_;
         for (Powerup& p : shown)
             if (p.state == PowerupState::Hidden) p = {};
         field(a, shown);

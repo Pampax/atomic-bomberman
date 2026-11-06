@@ -9,7 +9,6 @@ namespace {
 constexpr int kFlameDanger = 1000;  // original value for flame cells
 constexpr int kPowerupReach = 4;    // original value 920
 constexpr int kBrickBlastChance = 5;  // original value 915
-std::size_t idx(Cell c) { return static_cast<std::size_t>(c.y * kGridW + c.x); }
 }  // namespace
 
 void AiPlayer::buildDanger(const World& w) {
@@ -17,8 +16,8 @@ void AiPlayer::buildDanger(const World& w) {
     auto mark = [this](Cell c, int level) {
         if (inGrid(c) && danger_[idx(c)] < level) danger_[idx(c)] = level;
     };
-    for (int y = 0; y < kGridH; ++y)
-        for (int x = 0; x < kGridW; ++x)
+    for (int y = 0; y < gridH_; ++y)
+        for (int x = 0; x < gridW_; ++x)
             if (w.flame({x, y}).active) mark({x, y}, kFlameDanger);
     // Every cell a bomb's blast would reach, at level 100 + elapsed fuse in
     // milliseconds (original: 0x42429B), so bombs closer to exploding rank higher.
@@ -44,10 +43,13 @@ void AiPlayer::buildDanger(const World& w) {
 // at 100 + 10 per cell of warning, falling by 10 with each cell further ahead (0x42692D).
 void AiPlayer::markWalls(const World& w) {
     constexpr int kAhead = 15;
-    int level = 100 + kAhead * 10;
-    for (const Cell c : w.upcomingWallCells(kAhead)) {
+    // On a big map the walls run proportionally faster: the same warning in time is more cells.
+    const int blocks = w.mapBlocks();
+    int cellsAhead = kAhead * blocks;
+    for (const Cell c : w.upcomingWallCells(kAhead * blocks)) {
+        const int level = 100 + cellsAhead * 10 / blocks;
         if (inGrid(c) && danger_[idx(c)] < level) danger_[idx(c)] = level;
-        level -= 10;
+        --cellsAhead;
     }
 }
 
@@ -73,7 +75,7 @@ bool AiPlayer::safeWalkable(const World& w, Cell c) const {
 // of the pass. `own` is asked about a walker's cell and `look` about the cells it looks
 // into; either ends the search by returning true. Passes 0..maxPasses are made.
 template <class Own, class Look>
-static int walkerFlood(const std::array<bool, kGridW * kGridH>& passable, Cell from, int maxPasses, int coin, Own own, Look look) {
+static int walkerFlood(const std::array<bool, kMaxCells>& passable, int gridW, int gridH, Cell from, int maxPasses, int coin, Own own, Look look) {
     struct Walker {
         bool active = false;
         Cell cell{};
@@ -81,11 +83,13 @@ static int walkerFlood(const std::array<bool, kGridW * kGridH>& passable, Cell f
         Dir dir = 0;
         int state = 0;   // 1 new, 2 new and to be skipped once, 0 moving
     };
-    std::array<bool, kGridW * kGridH> blockedGrid;
-    for (std::size_t i = 0; i < blockedGrid.size(); ++i) blockedGrid[i] = !passable[i];
-    auto blockedAt = [&](Cell c) { return !inGrid(c) || blockedGrid[static_cast<std::size_t>(c.y * kGridW + c.x)]; };
+    const auto inMap = [&](Cell c) { return c.x >= 0 && c.x < gridW && c.y >= 0 && c.y < gridH; };
+    std::array<bool, kMaxCells> blockedGrid;
+    const auto cells = static_cast<std::size_t>(gridW * gridH);
+    for (std::size_t i = 0; i < cells; ++i) blockedGrid[i] = !passable[i];
+    auto blockedAt = [&](Cell c) { return !inMap(c) || blockedGrid[static_cast<std::size_t>(c.y * gridW + c.x)]; };
     auto mark = [&](Cell c) {
-        if (inGrid(c)) blockedGrid[static_cast<std::size_t>(c.y * kGridW + c.x)] = true;
+        if (inMap(c)) blockedGrid[static_cast<std::size_t>(c.y * gridW + c.x)] = true;
     };
     std::array<Walker, 100> walkers{};
     auto freeSlot = [&]() -> int {
@@ -119,7 +123,7 @@ static int walkerFlood(const std::array<bool, kGridW * kGridH>& passable, Cell f
                 if (blockedAt(c)) continue;
                 if (look(c, w.first)) return w.first;
                 const int slot = freeSlot();
-                if (slot < 0) continue;  // the original stops with an error here; 100 are never needed on this grid
+                if (slot < 0) continue;  // the original stops with an error here; 100 are never needed on its grid
                 ++alive;
                 walkers[static_cast<std::size_t>(slot)] = {true, c, w.first, nd, slot > i ? 2 : 1};
                 mark(c);
@@ -134,10 +138,17 @@ static int walkerFlood(const std::array<bool, kGridW * kGridH>& passable, Cell f
     return 0;
 }
 
-std::array<bool, kGridW * kGridH> AiPlayer::passability(const World& w) const {
-    std::array<bool, kGridW * kGridH> grid;
-    for (int y = 0; y < kGridH; ++y)
-        for (int x = 0; x < kGridW; ++x) grid[idx({x, y})] = !blocked(w, {x, y});
+// The same answer as blocked() for every cell, with each bomb looked at once instead of once
+// per cell: the search runs often, and a big map has nine times the cells.
+std::array<bool, kMaxCells> AiPlayer::passability(const World& w) const {
+    std::array<bool, kMaxCells> grid;
+    for (int y = 0; y < gridH_; ++y)
+        for (int x = 0; x < gridW_; ++x) grid[idx({x, y})] = w.tile({x, y}) == Tile::Blank;
+    for (const Bomb& b : w.bombs()) {
+        if (!b.active || b.mode == BombMode::Flying || b.mode == BombMode::Held) continue;
+        const Cell c = pixelToCell(b.x, b.y);
+        if (inGrid(c)) grid[idx(c)] = false;
+    }
     return grid;
 }
 
@@ -146,7 +157,7 @@ Dir AiPlayer::pathStep(const World& w, Cell from, Cell to, int maxDepth) {
     const int coin = rng_.below(2) * 2 - 1;
     if (from == to) return kNoDir;
     auto reached = [&](Cell c, int) { return c == to; };
-    return walkerFlood(passability(w), from, maxDepth, coin, reached, reached) - 1;
+    return walkerFlood(passability(w), gridW_, gridH_, from, maxDepth, coin, reached, reached) - 1;
 }
 
 // Original 0x40970B: every cell a walker stands on or looks into is compared with the least
@@ -163,7 +174,7 @@ Dir AiPlayer::stepToSafety(const World& w, Cell from, Cell* target) {
         if (target != nullptr) *target = c;
         return best == 0;
     };
-    const int found = walkerFlood(passability(w), from, 20, coin, consider, consider);
+    const int found = walkerFlood(passability(w), gridW_, gridH_, from, 20, coin, consider, consider);
     return (found != 0 ? found : bestFirst) - 1;
 }
 
@@ -181,7 +192,7 @@ bool AiPlayer::nearestPowerup(const World& w, Cell from, int maxDepth, Cell* fou
         return true;
     };
     auto look = [](Cell, int) { return false; };
-    return walkerFlood(passability(w), from, maxDepth, coin, own, look) != 0;
+    return walkerFlood(passability(w), gridW_, gridH_, from, maxDepth, coin, own, look) != 0;
 }
 
 // A random living enemy, human players first (as the original does).
@@ -210,6 +221,8 @@ PlayerInput AiPlayer::decide(const World& w, int self, int dtMs) {
         return in;
     };
     if (!me.present || !me.alive) return finish();
+    gridW_ = w.gridW();
+    gridH_ = w.gridH();
     buildDanger(w);
     const Cell here = pixelToCell(me.x, me.y);
     // The start cell of this round (the original keeps the start position in the player
@@ -311,7 +324,8 @@ PlayerInput AiPlayer::decide(const World& w, int self, int dtMs) {
     }
     if (seekingPowerup_) {
         powerupMs_ += dtMs;
-        if (powerupMs_ >= 500 || w.powerup(powerupCell_).state != PowerupState::Revealed) {
+        // (A cell from a round on a bigger map may lie outside this one.)
+        if (powerupMs_ >= 500 || !inGrid(powerupCell_) || w.powerup(powerupCell_).state != PowerupState::Revealed) {
             seekingPowerup_ = false;
         } else {
             const Dir d = pathStep(w, here, powerupCell_, kPowerupReach + 1);

@@ -6,8 +6,15 @@
 
 namespace ab {
 
+// The classic field, as the original has it and as scheme files describe it.
 inline constexpr int kGridW = 15;
 inline constexpr int kGridH = 11;
+// A big map (docs/specifications/big-maps.md; not in the original) repeats that field up to
+// this many times in each direction. World::gridW() and gridH() say what a round uses.
+inline constexpr int kMaxMapRepeat = 3;
+inline constexpr int kMaxGridW = kGridW * kMaxMapRepeat;
+inline constexpr int kMaxGridH = kGridH * kMaxMapRepeat;
+inline constexpr int kMaxCells = kMaxGridW * kMaxGridH;
 inline constexpr int kCellW = 40;
 inline constexpr int kCellH = 36;
 inline constexpr int kOriginX = 20;
@@ -30,6 +37,7 @@ struct Cell {
 };
 
 constexpr Cell step(Cell c, Dir d) { return {c.x + kDx[static_cast<unsigned>(d)], c.y + kDy[static_cast<unsigned>(d)]}; }
+// Inside the classic field (a scheme's own cells). During a round: World::inGrid.
 constexpr bool inGrid(Cell c) { return c.x >= 0 && c.x < kGridW && c.y >= 0 && c.y < kGridH; }
 
 // Reference point of a cell: horizontal centre, bottom row.

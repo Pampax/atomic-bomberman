@@ -28,6 +28,7 @@ struct Settings {
     bool assignKeyboards = true;      // assign_keyboards: a keyboard player in the default player list
     bool freeAssets = false;          // free_assets: play with the free graphics and sounds although original data is there (not in the original)
     bool fullscreen = false;          // fullscreen: the game fills the screen instead of a window (not in the original, which always fills it)
+    int mapRepeat = 1;                // map_repeat: a local match on the classic field repeated N x N times, 1-3 (not in the original)
     // Network play (this implementation's client-server mode; not the original's keys).
     std::string netName;              // net_name: the player's name; empty until first set
     std::string netAddress;           // net_address: the server last joined

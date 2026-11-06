@@ -15,6 +15,7 @@
 #include "free/free_art.hpp"
 #include "free/free_data.hpp"
 #include "game/ai.hpp"
+#include "game/match.hpp"
 #include "game/roulette.hpp"
 #include "game/world.hpp"
 #include "resources/campaign_file.hpp"
@@ -2355,6 +2356,235 @@ void testAssetImport() {
     fs::remove_all(root);
 }
 
+// Big maps (docs/specifications/big-maps.md). The original has none: these are this
+// program's own rules, so nothing here was observed on it.
+Scheme repeatedPillars(int repeat) {
+    Scheme s = Scheme::pillars();
+    s.repeatX = s.repeatY = repeat;
+    return s;
+}
+
+void testBigMapLayout() {
+    Fixture classic;
+    CHECK_EQ(classic.w.gridW(), kGridW);
+    CHECK_EQ(classic.w.gridH(), kGridH);
+    CHECK(!classic.w.bigMap());
+
+    Fixture f(repeatedPillars(3), kMaxPlayers);
+    CHECK_EQ(f.w.gridW(), 45);
+    CHECK_EQ(f.w.gridH(), 33);
+    CHECK_EQ(f.w.mapBlocks(), 9);
+    CHECK_EQ(f.w.mapScale(), 3);
+    CHECK(f.w.bigMap());
+    // The field repeats; outside the map it is solid, as for the classic field.
+    CHECK(f.w.tile({1, 1}) == Tile::Solid);
+    CHECK(f.w.tile({16, 12}) == Tile::Solid);
+    CHECK(f.w.tile({31, 23}) == Tile::Solid);
+    CHECK(f.w.tile({44, 32}) == Tile::Blank);
+    CHECK(f.w.inGrid({44, 32}));
+    CHECK(!f.w.inGrid({45, 0}));
+    CHECK(!f.w.inGrid({0, 33}));
+    CHECK(f.w.tile({45, 0}) == Tile::Solid);
+    CHECK(f.w.tile({0, 33}) == Tile::Solid);
+
+    // Each player has its own start cell in a copy of its own, far apart first.
+    CHECK(f.cellOf(0) == (Cell{0, 0}));
+    CHECK(f.cellOf(1) == (Cell{44, 32}));
+    CHECK(f.cellOf(2) == (Cell{30, 10}));
+    CHECK(f.cellOf(3) == (Cell{14, 22}));
+    CHECK(f.cellOf(4) == (Cell{21, 15}));
+    CHECK(f.cellOf(9) == (Cell{6, 10}));  // the tenth shares a copy with the first
+
+    Fixture two(repeatedPillars(2), 2);
+    CHECK_EQ(two.w.gridW(), 30);
+    CHECK_EQ(two.w.gridH(), 22);
+    CHECK(two.cellOf(1) == (Cell{29, 21}));
+
+    // Not more than the limit, and not necessarily square.
+    Fixture many(repeatedPillars(99), 1);
+    CHECK_EQ(many.w.gridW(), kMaxGridW);
+    Scheme wide = Scheme::pillars();
+    wide.repeatX = 3;
+    Fixture strip(wide, 2);
+    CHECK_EQ(strip.w.gridW(), 45);
+    CHECK_EQ(strip.w.gridH(), 11);
+    CHECK_EQ(strip.w.mapBlocks(), 3);
+    CHECK(strip.cellOf(1) == (Cell{44, 10}));
+
+    // A smaller map after a bigger one in the same World.
+    f.w.startRound(Scheme::pillars(), false);
+    CHECK_EQ(f.w.gridW(), kGridW);
+    CHECK(!f.w.bigMap());
+}
+
+void testBigMapPlay() {
+    // Players and blasts cross from one copy of the field into the next.
+    Fixture f(repeatedPillars(3), 2);
+    f.place(0, {14, 0});
+    f.hold(0, 1);
+    f.run(40);
+    CHECK(f.cellOf(0).x > 15);
+    f.place(0, {40, 20});
+    f.hold(0, kNoDir);
+    f.w.createBomb(1, {14, 2}, BombType::Regular, 3, 1);
+    f.run(1);
+    CHECK(f.w.flame({14, 2}).active);
+    CHECK(f.w.flame({17, 2}).active);
+    CHECK(f.w.flame({11, 2}).active);
+    f.run(20);
+    CHECK(!f.w.flame({17, 2}).active);
+
+    // A bomb punched off the map's edge comes back on the far side of the whole map.
+    Fixture g(repeatedPillars(3), 2);
+    g.w.player(0).inventory[kPowPunch] = 1;
+    g.w.player(0).inventory[kPowSkate] = 2;
+    g.place(0, {4, 0});
+    g.place(1, {0, 0});
+    g.w.player(0).facing = 3;
+    g.w.createBomb(0, {3, 0}, BombType::Regular, 1, 400);
+    g.in[0].button2 = true;
+    g.run(1);
+    g.in[0].button2 = false;
+    g.run(52);
+    const Bomb& thrown = g.w.bombs()[0];
+    CHECK(thrown.mode == BombMode::Resting);
+    CHECK(pixelToCell(thrown.x, thrown.y) == (Cell{44, 0}));
+
+    // The level's features repeat with the field; a warp stays linked within its copy.
+    Scheme s = repeatedPillars(3);
+    World w(Values::defaults(), 7);
+    w.startRound(s, false);
+    Extra a, b, spring;
+    a.type = b.type = ExtraType::Warp;
+    a.cell = {2, 2}, a.id = 1, a.linkTo = 2;
+    b.cell = {12, 8}, b.id = 2, b.linkTo = 1;
+    spring.type = ExtraType::Trampoline;
+    spring.cell = {-1, -1};  // goes anywhere
+    w.setExtras({a, b, spring});
+    CHECK_EQ(static_cast<int>(w.extras().size()), 27);
+    int linked = 0;
+    for (const Extra& e : w.extras()) {
+        CHECK(w.inGrid(e.cell));
+        if (e.type != ExtraType::Warp) continue;
+        for (const Extra& o : w.extras())
+            if (o.type == ExtraType::Warp && o.id == e.linkTo && o.cell.x / kGridW == e.cell.x / kGridW && o.cell.y / kGridH == e.cell.y / kGridH) ++linked;
+    }
+    CHECK_EQ(linked, 18);
+    CHECK(w.extraAt({2 + 2 * kGridW, 2 + kGridH}) != nullptr);
+
+    // As many hidden powerups per copy of the field.
+    Scheme bricks = Scheme::pillars();
+    for (auto& row : bricks.tiles)
+        for (Tile& t : row)
+            if (t == Tile::Blank) t = Tile::Brick;
+    const auto hidden = [&](const Scheme& scheme) {
+        World world(Values::defaults(), 11);
+        world.startRound(scheme, true);
+        int n = 0;
+        for (int y = 0; y < world.gridH(); ++y)
+            for (int x = 0; x < world.gridW(); ++x) n += world.powerup({x, y}).state == PowerupState::Hidden ? 1 : 0;
+        return n;
+    };
+    const int oneField = hidden(bricks);
+    bricks.repeatX = bricks.repeatY = 3;
+    CHECK(oneField > 0);
+    CHECK(hidden(bricks) >= oneField * 7);
+
+    // The clock runs as many times longer as the map is across.
+    const Values values = Values::defaults();
+    RoundSetup setup;
+    setup.scheme = repeatedPillars(3);
+    setup.present[0] = setup.present[1] = true;
+    World round(values, 3);
+    applyRoundSetup(round, values, setup);
+    CHECK_EQ(round.secondsLeft(), 450);
+    setup.scheme = Scheme::pillars();
+    applyRoundSetup(round, values, setup);
+    CHECK_EQ(round.secondsLeft(), 150);
+    setup.scheme = repeatedPillars(3);
+    setup.playTime = kInfinitePlayTime;
+    applyRoundSetup(round, values, setup);
+    CHECK_EQ(round.secondsLeft(), -1);
+
+    // The closing walls take as long as on the classic field to close as much of the map:
+    // a depth of one is two rings of the classic field, six of three copies across.
+    Fixture closing(repeatedPillars(3), 2);
+    closing.place(0, {22, 15});
+    closing.place(1, {24, 15});
+    closing.w.setEnclosementDepth(1);
+    closing.w.setRoundSeconds(60);
+    closing.run(6 * 20);
+    CHECK(closing.w.tile({22, 0}) == Tile::Blank || closing.w.closedCells() > 0);
+    closing.run(25 * 20);
+    CHECK(closing.w.tile({22, 0}) == Tile::Solid);
+    CHECK(closing.w.tile({22, 5}) == Tile::Solid);
+    CHECK(closing.w.tile({22, 6}) == Tile::Blank);
+    CHECK(closing.w.player(0).alive && closing.w.player(1).alive);
+
+    // A state goes only into a World with a map of the same size.
+    Fixture from(repeatedPillars(3), 2);
+    from.w.createBomb(0, {40, 30}, BombType::Regular, 2, 40);
+    from.run(5);
+    const std::vector<std::uint8_t> state = from.w.saveState();
+    World same(Values::defaults(), 9);
+    same.startRound(repeatedPillars(3), false);
+    CHECK(same.loadState(state));
+    CHECK_EQ(same.stateHash(), from.w.stateHash());
+    World smaller(Values::defaults(), 9);
+    smaller.startRound(Scheme::pillars(), false);
+    CHECK(!smaller.loadState(state));
+
+    // The choice of size is kept with the settings.
+    Settings chosen;
+    CHECK_EQ(chosen.mapRepeat, 1);
+    chosen.mapRepeat = 3;
+    Settings read;
+    read.parse(chosen.serialize());
+    CHECK_EQ(read.mapRepeat, 3);
+    read.parse("map_repeat=9\n");
+    CHECK_EQ(read.mapRepeat, kMaxMapRepeat);
+}
+
+// Ten computer players on the biggest map: they play it out, the same way every time.
+void testBigMapComputerPlayers() {
+    Scheme s = Scheme::pillars();
+    for (auto& row : s.tiles)
+        for (Tile& t : row)
+            if (t == Tile::Blank) t = Tile::Brick;
+    s.repeatX = s.repeatY = kMaxMapRepeat;
+    s.brickDensity = 60;
+    const auto play = [&](std::uint32_t seed, int* bricksLeft, int* steps) {
+        World w(Values::defaults(), seed);
+        w.startRound(s, true);
+        for (int i = 0; i < kMaxPlayers; ++i) w.addPlayer(i);
+        w.endStartFreeze();
+        w.setRoundSeconds(120);
+        std::vector<AiPlayer> ai;
+        for (int i = 0; i < kMaxPlayers; ++i) ai.emplace_back(seed * 31u + static_cast<std::uint32_t>(i) * 977u + 5u);
+        int before = 0;
+        for (int y = 0; y < w.gridH(); ++y)
+            for (int x = 0; x < w.gridW(); ++x) before += w.tile({x, y}) == Tile::Brick ? 1 : 0;
+        *steps = 0;
+        while (!w.roundOver() && *steps < 3000) {
+            Inputs in{};
+            for (int i = 0; i < kMaxPlayers; ++i) in[static_cast<std::size_t>(i)] = ai[static_cast<std::size_t>(i)].decide(w, i, 50);
+            w.tick(50, in);
+            ++*steps;
+        }
+        *bricksLeft = before;
+        for (int y = 0; y < w.gridH(); ++y)
+            for (int x = 0; x < w.gridW(); ++x) *bricksLeft -= w.tile({x, y}) == Tile::Brick ? 1 : 0;
+        CHECK(w.roundOver());
+        return w.stateHash();
+    };
+    int burnt = 0, steps = 0, burntAgain = 0, stepsAgain = 0;
+    const std::uint32_t first = play(77, &burnt, &steps);
+    const std::uint32_t second = play(77, &burntAgain, &stepsAgain);
+    CHECK_EQ(first, second);
+    CHECK_EQ(steps, stepsAgain);
+    CHECK(burnt > 20);  // they do get on with it
+}
+
 int main() {
     const std::vector<std::pair<std::string, std::function<void()>>> tests = {
         {"geometry", testGeometry},
@@ -2431,6 +2661,9 @@ int main() {
         {"guesses about chance are not shown", testGuessesAboutChanceAreNotShown},
         {"free assets", testFreeAssets},
         {"typed text", testTypedText},
+        {"big map layout", testBigMapLayout},
+        {"big map play", testBigMapPlay},
+        {"big map computer players", testBigMapComputerPlayers},
     };
     for (const auto& [name, fn] : tests) {
         const int before = g_failures;

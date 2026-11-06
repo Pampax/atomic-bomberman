@@ -8,6 +8,8 @@
 #include <fstream>
 #include <sstream>
 
+#include "game/geometry.hpp"
+
 namespace ab {
 
 namespace {
@@ -46,6 +48,7 @@ void Settings::parse(const std::string& text) {
         else if (key == "assign_keyboards") assignKeyboards = n != 0;
         else if (key == "free_assets") freeAssets = n != 0;
         else if (key == "fullscreen") fullscreen = n != 0;
+        else if (key == "map_repeat") mapRepeat = std::clamp(n, 1, kMaxMapRepeat);
         else if (key == "smallmemory") smallMemory = n != 0;
         else if (key == "unused_voices") unusedVoices = n != 0;
         else if (key == "music_volume") musicVolume = std::clamp(n, 0, 100);
@@ -88,7 +91,7 @@ std::string Settings::serialize() const {
         << "\nconveyor_speed=" << conveyorSpeed << "\nteam_play=" << teamPlay << "\nrandom_start=" << randomStart
         << "\nstomped_bombs_detonate=" << stompedBombsDetonate << "\nwin_by_kills=" << winByKills << "\ngoldman=" << goldman
         << "\nschemefilename=" << scheme << ".SCH\nplaytime=" << playTime << "\ndiseases_destroyable=" << diseasesDestroyable
-        << "\ndisable_game_music=" << disableGameMusic << "\nassign_keyboards=" << assignKeyboards << "\nfree_assets=" << freeAssets << "\nfullscreen=" << fullscreen << "\nsmallmemory=" << smallMemory
+        << "\ndisable_game_music=" << disableGameMusic << "\nassign_keyboards=" << assignKeyboards << "\nfree_assets=" << freeAssets << "\nfullscreen=" << fullscreen << "\nmap_repeat=" << mapRepeat << "\nsmallmemory=" << smallMemory
         << "\nmusic_volume=" << musicVolume << "\nsound_volume=" << soundVolume << "\nunused_voices=" << unusedVoices << "\nnet_name=" << netName << "\nnet_address="
         << netAddress << "\nnet_server_name=" << netServerName << "\nnet_port=" << netPort << "\nnet_prediction=" << netPrediction << "\nnet_online=" << netOnline
         << "\nonline_config_url=" << onlineConfigUrl << "\nonline_config_key=" << onlineConfigKey << "\ntournament=" << tournament << "\ntournament_key=" << tournamentKey

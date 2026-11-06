@@ -9,6 +9,7 @@
 // played again.
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <deque>
@@ -246,6 +247,10 @@ struct Scheme {
     std::array<std::array<Tile, kGridW>, kGridH> tiles{};
     int brickDensity = 100;  // percent of brick cells kept
     std::array<Cell, kMaxPlayers> start{};
+    // A big map: this field repeated, side by side (1 x 1 is the classic game). The size is
+    // chosen for the match, so it is not part of a scheme file.
+    int repeatX = 1;
+    int repeatY = 1;
 
     // Blank field with solid pillars at odd column and odd row.
     static Scheme pillars();
@@ -281,6 +286,16 @@ public:
 
     // Advances the simulation by dtMs milliseconds (clamped to value 31).
     void tick(int dtMs, const std::array<PlayerInput, kMaxPlayers>& input);
+
+    // --- the map ---
+    // Its size in cells: the classic 15 x 11, or that repeated (Scheme::repeatX, repeatY).
+    int gridW() const { return gridW_; }
+    int gridH() const { return gridH_; }
+    bool inGrid(Cell c) const { return c.x >= 0 && c.x < gridW_ && c.y >= 0 && c.y < gridH_; }
+    // How many copies of the classic field it holds, and how many fit along its longer side.
+    int mapBlocks() const { return gridW_ / kGridW * (gridH_ / kGridH); }
+    int mapScale() const { return std::max(gridW_ / kGridW, gridH_ / kGridH); }
+    bool bigMap() const { return mapBlocks() > 1; }
 
     // --- state access ---
     Tile tile(Cell c) const;  // outside the grid: Solid
@@ -397,7 +412,7 @@ public:
 private:
     template <class A>
     void archive(A& a);
-    static std::size_t index(Cell c) { return static_cast<std::size_t>(c.y * kGridW + c.x); }
+    std::size_t index(Cell c) const { return static_cast<std::size_t>(c.y * gridW_ + c.x); }
     Powerup& look(Cell c) { return powerups_[index(c)]; }
 
     bool playerPassable(Cell c) const;
@@ -486,9 +501,13 @@ private:
     std::vector<Event> events_;
     void emit(EventKind kind, int player = -1, int value = 0) { events_.push_back({kind, player, value}); }
 
-    std::array<Tile, kGridW * kGridH> tiles_{};
-    std::array<Flame, kGridW * kGridH> flames_{};
-    std::array<Powerup, kGridW * kGridH> powerups_{};
+    // The map's size comes with the round setup (startRound), as the tuning values do, so it
+    // is not in World::archive: a state only loads into a World of the same size.
+    int gridW_ = kGridW;
+    int gridH_ = kGridH;
+    std::vector<Tile> tiles_;      // gridW_ x gridH_ cells, row by row
+    std::vector<Flame> flames_;
+    std::vector<Powerup> powerups_;
     std::array<Player, kMaxPlayers> players_{};
     std::array<Cell, kMaxPlayers> startCells_{};
     std::vector<Bomb> bombs_;
